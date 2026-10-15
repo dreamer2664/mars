@@ -43,7 +43,8 @@ hot file (see §4). Every file carries `"schema": 1`.
   "stage": 1, "stage_name": "concept-proposed",
   "history": [ {"ts":"...Z","stage":1,"by":"<name>","evidence":"thread <id>|path|url"} ],
   "fields": { "sources": [], "script": null, "assets": [], "thumbnail": null, "description": "" },
-  "publish": { "approved_by": null, "approved_ts": null, "url": null, "verified_ts": null },
+  "publish": { "approval_kind": null, "approved_by": null, "approved_ts": null,
+               "directive_ref": null, "url": null, "verified_ts": null },
   "warnings": [] }
 
 // meetings/<id>.json  — mtg-...
@@ -75,8 +76,12 @@ hot file (see §4). Every file carries `"schema": 1`.
 · 6 `assets` · 7 `assembled` · 8 `final-review` · 9 `publish-approved` · 10 `pc-requested`
 · 11 `uploaded` · 12 `verified` · 13 `recorded`
 
-Stage 9 requires `publish.approved_by` per Charter §5. Stage 12 requires a **verified**
-url. Stage 13 writes the receipt into the ledger. Simple formats may shorten the middle
+Stage 9 requires an approval record naming its kind per Charter §5: `directive` (the
+Director's word on the idea — `directive_ref` carries the bus/ntfy message id —
+pre-authorizes this video), `director` (approved at the gate), or `manager-fallback`
+(the Director was pinged and stayed silent past the window; the manager approves on
+the record). The CLI refuses an unnamed or unauthorized approver. Stage 12 requires a
+**verified** url. Stage 13 writes the receipt into the ledger. Simple formats may shorten the middle
 stages, but transitions stay explicit and recorded — never skipped silently.
 
 ## 3. The CLI — `tools/world.py` (the only writer)
@@ -116,6 +121,9 @@ file with the bus id — one action, two records, no drift. Ordinary chatter nev
   the current grant. A crashed controller cannot continue acting.
 - **Audit**: every transition is appended to `history` (capped at 50 in-file; the full
   history is the git log).
+- **The executor** is the bridge (docs/BRIDGE.md; the Director's Windows PC): it
+  fails closed, acts only on a matching token+generation, performs only allowlisted
+  actions, and returns a receipt which the requesting agent records in the world.
 
 ## 5. Concurrency (how files stay honest)
 

@@ -124,3 +124,25 @@ code.
 > machine) and the upload road (official API recommended; ~6 uploads/day/project without
 > Google's audit). We report with files, tests, and receipts; nothing is claimed until it
 > has been run.
+
+---
+
+## 7b. The Director's calls — answered (2026-10-15, 2026-10-15T12:29:45Z)
+
+1. **Colonists** — the current crew: **odysseus, argus, scipio, cormac, ariadne**. Seated in
+   `world/agents/` the same hour; each declares its channel theme at first wake (the voice
+   is the colonist's, not the manager's).
+2. **The PC** — a **Windows machine**, and the bridge is authorised: a tiny local service
+   (the only thing that ever touches the desktop), allowlisted actions, token+generation
+   fencing, fail-closed. Spec: `docs/BRIDGE.md`. Job: M-BRIDGE.
+3. **Uploads** — the **browser road** (the Director's call): attach over CDP to a dedicated
+   profile he logs into once; his sessions do the uploads. No API paperwork, no cookies
+   exported, no password in the project. The fragility is accepted and fenced: receipts,
+   verification, never an assumed upload.
+4. **Approval** — his word on the **idea** is a directive: a bus/ntfy message naming the
+   thread or video, and it pre-authorises that video end-to-end. Without a directive the
+   gate pings him; if he is unavailable, the **manager** approves on the record. Every
+   approval records which kind it was. (CHARTER §5, amended.)
+
+With these calls, M0 and M1 are both unblocked. The bridge card is cut; the founding state
+is seeded; the five have their studios.

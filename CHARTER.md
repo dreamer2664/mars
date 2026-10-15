@@ -74,10 +74,17 @@ and the map is a bug.**
   sweep grants a **new generation**. Stale tokens die.
 - **Never** put credentials, cookies, session data, or account secrets in the state, in
   messages, or in logs — ever, anywhere.
+- The bridge runs on the Director's **Windows PC**; uploads ride his already-logged-in
+  browser sessions, attached over CDP (docs/BRIDGE.md). Credentials are never copied,
+  exported, or stored — by anyone, anywhere.
 - Permitted desktop actions are an allowlist in the bridge spec. Publication requires the
   video's publish-approval recorded first.
-- Publication is **Director-gated** until he delegates it (documented in the contract, not
-  assumed).
+- **Publication approval** (Director's call, 2026-10-15): his word on the *idea* is a
+  **directive** — a bus or ntfy message naming the thread or video — and it
+  pre-authorizes that video: no further gate before upload. Without a directive,
+  stage 9 pings him; if he does not answer within the window, the **manager** approves
+  on the record. Every approval records which kind it was: `directive` / `director` /
+  `manager-fallback`.
 
 ## 6. Quality and publishing
 

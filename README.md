@@ -8,8 +8,10 @@ Five is the founding population, not a limit.
 1. `CHARTER.md` — the colony's law (frozen; amend in the open, then the code).
 2. `docs/WORLD.md` — the world-state schema, the CLI, the PC lock protocol, the publishing
    pattern (frozen interface; **change it first, then the code**).
-3. `docs/PLAN.md` — the manager's plan: what the empire already had, what this builds, the
-   vertical slice, milestones, open Director decisions.
+3. `docs/BRIDGE.md` — the desktop bridge: the Director's Windows PC, the CDP browser road,
+   the allowlist, the fail-closed rules (frozen interface).
+4. `docs/PLAN.md` — the manager's plan: reuse map, decisions, the FIRST LIGHT slice,
+   milestones, and the Director's answered calls.
 
 **What will exist here**
 

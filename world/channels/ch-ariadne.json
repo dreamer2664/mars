@@ -1,10 +1,10 @@
 {
-  "schema": 1,
-  "key": "ch-ariadne",
-  "title": "ariadne \u2014 planned",
-  "owner": "ariadne",
-  "themes": [],
-  "status": "planned",
   "created_ts": "2026-10-15T12:29:45Z",
-  "note": "theme to be declared by the colonist at first wake"
+  "key": "ch-ariadne",
+  "note": "theme to be declared by the colonist at first wake",
+  "owner": "ariadne",
+  "schema": 1,
+  "status": "planned",
+  "themes": [],
+  "title": "ariadne — planned"
 }

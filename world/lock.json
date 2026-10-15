@@ -1,14 +1,14 @@
 {
-  "schema": 1,
-  "state": "free",
-  "holder": null,
-  "purpose": "",
-  "token": null,
-  "generation": 0,
-  "since_ts": null,
   "expires_ts": null,
-  "renew_count": 0,
+  "generation": 0,
+  "history": [],
+  "holder": null,
   "max_hold_min": 180,
+  "purpose": "",
   "queue": [],
-  "history": []
+  "renew_count": 0,
+  "schema": 1,
+  "since_ts": null,
+  "state": "free",
+  "token": null
 }

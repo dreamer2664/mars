@@ -1,17 +1,17 @@
 {
-  "schema": 1,
-  "id": "odysseus",
-  "kind": "ai",
-  "joined_ts": "2026-10-15T12:29:45Z",
-  "role": "colonist",
   "caps": [
     "review",
     "ledger",
     "tooling"
   ],
   "channel": "ch-odysseus",
-  "status": "active",
-  "location": "studio:odysseus",
+  "id": "odysseus",
+  "joined_ts": "2026-10-15T12:29:45Z",
+  "kind": "ai",
   "last_seen_ts": "2026-10-15T06:57:29Z",
-  "note": "founding five (empire role: worker; empire history precedes the colony)"
+  "location": "studio:odysseus",
+  "note": "founding five (empire role: worker; empire history precedes the colony)",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
 }

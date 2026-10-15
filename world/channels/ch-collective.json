@@ -1,10 +1,10 @@
 {
-  "schema": 1,
-  "key": "ch-collective",
-  "title": "Outpost Mars \u2014 collective",
-  "owner": "collective",
-  "themes": [],
-  "status": "planned",
   "created_ts": "2026-10-15T12:29:45Z",
-  "note": "collaboration only \u2014 never a mirror of the individual channels (CHARTER section 6)"
+  "key": "ch-collective",
+  "note": "collaboration only — never a mirror of the individual channels (CHARTER section 6)",
+  "owner": "collective",
+  "schema": 1,
+  "status": "planned",
+  "themes": [],
+  "title": "Outpost Mars — collective"
 }

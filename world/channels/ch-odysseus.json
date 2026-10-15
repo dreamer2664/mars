@@ -1,10 +1,10 @@
 {
-  "schema": 1,
-  "key": "ch-odysseus",
-  "title": "odysseus \u2014 planned",
-  "owner": "odysseus",
-  "themes": [],
-  "status": "planned",
   "created_ts": "2026-10-15T12:29:45Z",
-  "note": "theme to be declared by the colonist at first wake"
+  "key": "ch-odysseus",
+  "note": "theme to be declared by the colonist at first wake",
+  "owner": "odysseus",
+  "schema": 1,
+  "status": "planned",
+  "themes": [],
+  "title": "odysseus — planned"
 }

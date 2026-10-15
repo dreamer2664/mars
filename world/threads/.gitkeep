@@ -1,0 +1,2 @@
+world/threads/ — the world.py tool writes here (docs/WORLD.md).
+This file keeps the directory in git: an empty directory is invisible to a fresh clone.

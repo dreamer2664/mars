@@ -1,16 +1,16 @@
 {
-  "schema": 1,
-  "id": "ariadne",
-  "kind": "ai",
-  "joined_ts": "2026-10-15T12:29:45Z",
-  "role": "colonist",
   "caps": [
     "review",
     "maintenance"
   ],
   "channel": "ch-ariadne",
-  "status": "active",
-  "location": "studio:ariadne",
+  "id": "ariadne",
+  "joined_ts": "2026-10-15T12:29:45Z",
+  "kind": "ai",
   "last_seen_ts": "2026-10-14T20:33:03Z",
-  "note": "founding five (empire role: worker; empire history precedes the colony)"
+  "location": "studio:ariadne",
+  "note": "founding five (empire role: worker; empire history precedes the colony)",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
 }

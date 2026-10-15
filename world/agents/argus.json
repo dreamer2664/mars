@@ -1,16 +1,16 @@
 {
-  "schema": 1,
-  "id": "argus",
-  "kind": "ai",
-  "joined_ts": "2026-10-15T12:29:45Z",
-  "role": "colonist",
   "caps": [
     "review",
     "verification"
   ],
   "channel": "ch-argus",
-  "status": "active",
-  "location": "studio:argus",
+  "id": "argus",
+  "joined_ts": "2026-10-15T12:29:45Z",
+  "kind": "ai",
   "last_seen_ts": "2026-10-14T12:57:49Z",
-  "note": "founding five (empire role: worker; empire history precedes the colony)"
+  "location": "studio:argus",
+  "note": "founding five (empire role: worker; empire history precedes the colony)",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
 }

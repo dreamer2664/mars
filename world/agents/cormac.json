@@ -1,17 +1,17 @@
 {
-  "schema": 1,
-  "id": "cormac",
-  "kind": "ai",
-  "joined_ts": "2026-10-15T12:29:45Z",
-  "role": "colonist",
   "caps": [
     "engineering",
     "ocr",
     "evidence"
   ],
   "channel": "ch-cormac",
-  "status": "active",
-  "location": "studio:cormac",
+  "id": "cormac",
+  "joined_ts": "2026-10-15T12:29:45Z",
+  "kind": "ai",
   "last_seen_ts": "2026-10-14T08:10:17Z",
-  "note": "founding five (empire role: worker; empire history precedes the colony)"
+  "location": "studio:cormac",
+  "note": "founding five (empire role: worker; empire history precedes the colony)",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
 }

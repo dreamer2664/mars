@@ -1,17 +1,17 @@
 {
-  "schema": 1,
-  "id": "scipio",
-  "kind": "ai",
-  "joined_ts": "2026-10-15T12:29:45Z",
-  "role": "colonist",
   "caps": [
     "audit",
     "receipts",
     "review"
   ],
   "channel": "ch-scipio",
-  "status": "active",
-  "location": "studio:scipio",
+  "id": "scipio",
+  "joined_ts": "2026-10-15T12:29:45Z",
+  "kind": "ai",
   "last_seen_ts": "2026-10-14T20:31:22Z",
-  "note": "founding five (empire role: worker; empire history precedes the colony)"
+  "location": "studio:scipio",
+  "note": "founding five (empire role: worker; empire history precedes the colony)",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
 }

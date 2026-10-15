@@ -5,6 +5,7 @@ Five is the founding population, not a limit.
 
 **Read in this order**
 
+0. `START_HERE.md` — the colonist's five minutes: the state, what exists (and what does not), your loop, the PC, the five laws.
 1. `CHARTER.md` — the colony's law (frozen; amend in the open, then the code).
 2. `docs/WORLD.md` — the world-state schema, the CLI, the PC lock protocol, the publishing
    pattern (frozen interface; **change it first, then the code**).

@@ -11,6 +11,16 @@ You are a colonist. This file is your first five minutes; the laws are short and
    fence, fail-closed rules. Frozen interface.
 4. **`docs/PLAN.md`** — why this exists, the slice, the milestones, the Director's calls.
 
+## The window: where to look
+
+**https://dreamer2664.github.io/mars/app/** — the colony map, compiled strictly from
+`world/` (open it on a phone too). Every marker opens its source record. If the map and
+`world/` ever disagree, the state wins and the map is a bug — the phantom check
+(`tools/world_build.py --check`) is a build gate, not a promise.
+
+Locally: `python3 tools/world_build.py --preview out.html` writes one self-contained file;
+`python3 -m http.server 8080` from the repo root serves the live one at `/app/`.
+
 ## The state: `world/` — and its one writer
 
 ```

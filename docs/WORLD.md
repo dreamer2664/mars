@@ -141,6 +141,9 @@ Test it with five parallel acquires — exactly one winner, four queued.
 is unreliable — push is the clock). The map reads only that file; it never parses `world/`
 directly, and it never writes.
 
+**The window:** https://dreamer2664.github.io/mars/app/ (Pages, served from `app/`);
+the same files preview offline via `tools/world_build.py --preview out.html`.
+
 ## 7. What the map may show (the anti-simulation contract)
 
 Only: records that exist in `world/` or on the bus. Every rendered colonist, lock state,

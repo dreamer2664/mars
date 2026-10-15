@@ -14,7 +14,9 @@ Five is the founding population, not a limit.
 4. `docs/PLAN.md` — the manager's plan: reuse map, decisions, the FIRST LIGHT slice,
    milestones, and the Director's answered calls.
 
-**What will exist here**
+**Where to look:** **https://dreamer2664.github.io/mars/app/** — the map, compiled from `world/` on every push that moves it.
+
+**What exists here**
 
 ```
 world/            the state: agents, channels, videos, meetings, threads, archive, lock.json

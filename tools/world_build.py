@@ -53,14 +53,22 @@ def load_dir(root: Path, name: str, warnings: list) -> dict:
 
 
 def world_head(root: Path):
-    """(sha10, iso-ts) of the last commit touching world/ — deterministic content stamp."""
+    """(world_tree_id, iso-ts): the tree id of world/ at HEAD — content-derived.
+
+    Content-derived on purpose (learned the honest way: the first scheme used
+    `git log -1 -- world/`, which a depth-1 clone cannot resolve, so a stranger's
+    clone disagreed with the committed file and the drift test caught it).
+    The tree id changes exactly when world/ changes, is identical in shallow and
+    full clones, and never depends on history. The timestamp (last commit that
+    touched world/) is only used as the default --now."""
     try:
-        sha = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h", "--", "world/"],
-                             capture_output=True, text=True, timeout=20)
+        t = subprocess.run(["git", "-C", str(root), "rev-parse", "--short=10", "HEAD:world"],
+                           capture_output=True, text=True, timeout=20)
         ts = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%cI", "--", "world/"],
                             capture_output=True, text=True, timeout=20)
-        if sha.returncode == 0 and sha.stdout.strip():
-            return sha.stdout.strip()[:10], ts.stdout.strip()
+        if t.returncode == 0 and t.stdout.strip():
+            tsx = ts.stdout.strip() if ts.returncode == 0 and ts.stdout.strip() else None
+            return t.stdout.strip(), tsx
     except Exception:
         pass
     return None, None

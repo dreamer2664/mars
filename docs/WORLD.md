@@ -137,7 +137,9 @@ Test it with five parallel acquires — exactly one winner, four queued.
 
 `tools/world_build.py` compiles `world/` into one deterministic `app/world.json`
 (same idea as the empire's state compiler): capped lists, stable order, `generated_ts`,
-`warnings` for anything degraded. The workflow republishes **on push** (this account's cron
+`warnings` for anything degraded. `world_head` is the **tree id of `world/` at HEAD**
+(`git rev-parse HEAD:world`) — content-derived: it changes exactly when the world
+changes, it is identical in shallow and full clones, and it never depends on history. The workflow republishes **on push** (this account's cron
 is unreliable — push is the clock). The map reads only that file; it never parses `world/`
 directly, and it never writes.
 

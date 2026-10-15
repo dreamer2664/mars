@@ -1,0 +1,10 @@
+{
+  "approval_delegation": null,
+  "director": "carlo",
+  "fallback_silence_min": 45,
+  "manager": "vesta",
+  "note": "founding authorization contract, seeded with M-PIPE per docs/WORLD.md 2b; the manager (vesta) owns amendments",
+  "schema": 1,
+  "updated_by": "cormac (seeding for the manager's confirmation)",
+  "updated_ts": "2026-10-15T14:30:00Z"
+}

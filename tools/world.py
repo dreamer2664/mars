@@ -504,7 +504,274 @@ class World:
         print(f"ARCHIVED {aid} — {title}")
         return EXIT_OK
 
-    # ----------------------------------------------------------- readout ---
+    # ------------------------------------------------- the video pipeline ---
+    # M-PIPE (t-20261015-0bc7): the 13 stages as an explicit state machine.
+    # Every transition carries evidence; the gates below are the law
+    # (docs/WORLD.md §2 transition table, CHARTER §5/§6). The last two
+    # stages run on the STUB executor until the bridge lands (BRIDGE.md):
+    # every record it writes is labeled executor "stub".
+
+    STAGE_NO = {name: i + 1 for i, name in enumerate(STAGES)}
+
+    def _contract(self):
+        c = self.read_json("contract.json")
+        if c is None:
+            raise Refused("no world/contract.json — the manager must seed the authorization "
+                          "contract before any stage-9 approval", EXIT_REFUSED)
+        return c
+
+    def _video(self, vid):
+        v = self.read_json(f"videos/{vid}.json")
+        if v is None:
+            raise Refused(f"no video '{vid}' in world/videos/", EXIT_REFUSED)
+        return v
+
+    def _require_colonist(self, name):
+        if self.read_json(f"agents/{name}.json") is None:
+            raise Refused(f"'{name}' is not a registered colonist", EXIT_REFUSED)
+
+    @staticmethod
+    def _stage_arg(to):
+        """accepts 3 or 'script' -> 3"""
+        if to is None:
+            raise Refused("--to <stage number or name> is required", EXIT_ERR)
+        s = str(to).strip()
+        if s.isdigit():
+            n = int(s)
+            if 1 <= n <= 13:
+                return n
+        name = s.lower().strip()
+        if name in World.STAGE_NO:
+            return World.STAGE_NO[name]
+        raise Refused(f"unknown stage '{to}' (1-13 or a stage name)", EXIT_ERR)
+
+    def video_new(self, title, channel, by, evidence):
+        self._require_colonist(by)
+        if not (title or "").strip():
+            raise Refused("--title is required", EXIT_ERR)
+        if self.read_json(f"channels/{channel}.json") is None:
+            raise Refused(f"no channel '{channel}' in world/channels/", EXIT_ERR)
+        if not (evidence or "").strip():
+            raise Refused("stage 1 needs evidence (the concept thread, a path, or a url)", EXIT_ERR)
+        vid = new_id("vid")
+        v = {"schema": SCHEMA, "id": vid, "title": title.strip(), "channel": channel,
+             "owner": by, "stage": 1, "stage_name": STAGES[0],
+             "history": [{"ts": z(), "stage": 1, "by": by, "evidence": evidence.strip()}],
+             "fields": {"sources": [], "script": None, "assets": [], "thumbnail": None,
+                        "description": ""},
+             "publish": {"approval_kind": None, "approved_by": None, "approved_ts": None,
+                         "directive_ref": None, "url": None, "verified_ts": None},
+             "warnings": []}
+        rel = f"videos/{vid}.json"
+        self.write_json(rel, v)
+        try:
+            self.publish({rel: None}, f"video: {by} proposes '{title.strip()[:60]}' ({vid}, stage 1)")
+        except Conflict as e:
+            raise Refused(str(e), EXIT_CONFLICT)
+        print(f"VIDEO {vid} — stage 1/13 concept-proposed (channel {channel}, owner {by})")
+        return EXIT_OK
+
+    def video_advance(self, vid, to, by, evidence, url=None):
+        self._require_colonist(by)
+        n = self._stage_arg(to)
+        rel = f"videos/{vid}.json"
+        v = self._video(vid)
+        contract = self._contract()
+        if by != v.get("owner") and by != contract.get("manager"):
+            raise Refused(f"only the owner ({v.get('owner')}) or the manager may advance "
+                          f"{vid} — you are '{by}'", EXIT_REFUSED)
+        cur = int(v.get("stage") or 0)
+        if n <= cur:
+            raise Refused(f"illegal transition {cur} -> {n}: stages never go backwards "
+                          "(and a stage is never re-entered)", EXIT_REFUSED)
+        if not (evidence or "").strip():
+            raise Refused(f"stage {n} ({STAGES[n - 1]}) needs --evidence "
+                          "(a thread id, path, url, or receipt id)", EXIT_ERR)
+
+        if n <= 8:                                   # middle stages: shorten, never skip silently
+            pass
+        elif n == 9:
+            if not (v.get("publish") or {}).get("approved_by"):
+                raise Refused("stage 9 is the approval gate — record it first with "
+                              "`world.py video publish-approved` (Charter §5)", EXIT_REFUSED)
+        elif n == 10:
+            if cur != 9:
+                raise Refused(f"illegal transition {cur} -> 10: pc-requested comes straight "
+                              "after publish-approved", EXIT_REFUSED)
+            lock = self.lock_now()
+            if lock.get("state") != "held" or lock.get("holder") != by:
+                raise Refused(f"stage 10 needs the PC: acquire it first with "
+                              "`world.py pc acquire --by {by} --purpose 'upload {vid} ...'` "
+                              "(the lock is checked, not assumed)", EXIT_REFUSED)
+            if vid not in (lock.get("purpose") or ""):
+                raise Refused(f"stage 10 needs the PC held for THIS video — the lock's purpose "
+                              f"must name {vid} (current purpose: {lock.get('purpose')!r})",
+                              EXIT_REFUSED)
+        elif n == 11:
+            if cur != 10:
+                raise Refused(f"illegal transition {cur} -> 11: uploaded comes straight after "
+                              "pc-requested (e.g. 8 -> 11 skips the approval gate and the PC)",
+                              EXIT_REFUSED)
+        elif n == 12:
+            if cur != 11:
+                raise Refused(f"illegal transition {cur} -> 12: verified comes straight after "
+                              "uploaded", EXIT_REFUSED)
+            if not (url or "").startswith(("http://", "https://")):
+                raise Refused("stage 12 (verified) requires --url (http/https) — published "
+                              "means verified (Charter §6)", EXIT_ERR)
+        elif n == 13:
+            if cur != 12:
+                raise Refused(f"illegal transition {cur} -> 13: recorded comes straight after "
+                              "verified", EXIT_REFUSED)
+            pub = v.get("publish") or {}
+            if not pub.get("url") or not pub.get("verified_ts"):
+                raise Refused("stage 13 requires a verified url (run stage 12 with --url first)",
+                              EXIT_REFUSED)
+
+        base = self.read_bytes(rel)
+        touched = {rel: base}
+        entry = {"ts": z(), "stage": n, "by": by, "evidence": evidence.strip()}
+        if n == 12:
+            # the STUB executor "verifies" until the bridge lands — labeled, always
+            v["publish"]["url"] = url.strip()
+            v["publish"]["verified_ts"] = z()
+            entry["executor"] = "stub"
+            entry["url"] = url.strip()
+        v["stage"] = n
+        v["stage_name"] = STAGES[n - 1]
+        if n == 13:
+            lock = self.lock_now()
+            pub = v["publish"]
+            rid = new_id("rc")
+            receipt = {"schema": SCHEMA, "id": rid, "video": vid, "title": v.get("title"),
+                       "channel": v.get("channel"), "url": pub.get("url"),
+                       "verified_ts": pub.get("verified_ts"),
+                       "approval": {"kind": pub.get("approval_kind"), "by": pub.get("approved_by"),
+                                    "ts": pub.get("approved_ts"),
+                                    "directive_ref": pub.get("directive_ref")},
+                       "pc": {"generation": lock.get("generation"),
+                              "holder": lock.get("holder")},
+                       "executor": "stub",
+                       "deposit": {"target": "storagecode", "status": "stub-local"},
+                       "created_ts": z()}
+            relr = f"receipts/{rid}.json"
+            self.write_json(relr, receipt)
+            touched[relr] = None
+            entry["executor"] = "stub"
+            entry["receipt"] = rid
+            print(f"RECEIPT {rid} written by the STUB executor "
+                  "(labeled 'stub' in the record and on the map; the bridge replaces it)")
+        v.setdefault("history", []).append(entry)
+        self.write_json(rel, v)
+        try:
+            self.publish(touched, f"video: {vid} {cur} -> {n} ({STAGES[n - 1]}) by {by}")
+        except Conflict as e:
+            raise Refused(str(e), EXIT_CONFLICT)
+        print(f"ADVANCED {vid}: stage {cur} -> {n} ({STAGES[n - 1]})")
+        return EXIT_OK
+
+    def video_publish_approved(self, vid, by, kind, ref=None, pinged_ts=None):
+        rel = f"videos/{vid}.json"
+        v = self._video(vid)
+        contract = self._contract()
+        cur = int(v.get("stage") or 0)
+        pub = v.setdefault("publish", {})
+        if pub.get("approved_by"):
+            raise Refused(f"{vid} is already publish-approved (by {pub.get('approved_by')}, "
+                          f"kind {pub.get('approval_kind')}, at {pub.get('approved_ts')})",
+                          EXIT_REFUSED)
+        director = contract.get("director")
+        manager = contract.get("manager")
+        delegation = contract.get("approval_delegation") or None
+
+        if kind == "directive":
+            if not (ref or "").strip():
+                raise Refused("a directive needs --ref (the Director's bus/ntfy message id) — "
+                              "a claim without a record does not exist (CHARTER §3)", EXIT_ERR)
+            approver = director
+            note = (f"directive recorded by {by}; ref {ref.strip()} will be checked in review")
+        elif kind == "director":
+            allowed = (by == director) or (isinstance(delegation, dict)
+                                           and delegation.get("video") == vid
+                                           and delegation.get("to") == by)
+            if not allowed:
+                who = f"'{director}'"
+                if isinstance(delegation, dict) and delegation.get("video") == vid:
+                    who += f" or the recorded delegate '{delegation.get('to')}'"
+                raise Refused(f"stage 9 approval is Director-gated: only {who} may approve "
+                              f"(Charter §5, world/contract.json) — you are '{by}'", EXIT_REFUSED)
+            approver = by
+            note = "approved at the gate by the Director" + \
+                   (" (recorded delegation)" if by != director else "")
+        elif kind == "manager-fallback":
+            if by != manager:
+                raise Refused(f"manager-fallback approval is the manager's ({manager!r}) — "
+                              f"you are '{by}'", EXIT_REFUSED)
+            if cur != 8:
+                raise Refused("manager-fallback records the Director's silence at the gate — "
+                              "the video must be at stage 8 (final-review) first", EXIT_REFUSED)
+            pt = parse_ts(pinged_ts or "")
+            window = int(contract.get("fallback_silence_min", 45))
+            if pt is None:
+                raise Refused("manager-fallback needs --pinged-ts (when the Director was "
+                              "pinged, ...Z) — silence must be timed, not asserted", EXIT_ERR)
+            silent_min = (now() - pt).total_seconds() / 60
+            if silent_min < window:
+                raise Refused(f"the Director's silence window ({window} min) has not elapsed "
+                              f"({silent_min:.0f} min since the ping) — wait or escalate",
+                              EXIT_REFUSED)
+            approver = by
+            note = f"manager fallback: pinged at {pinged_ts}, silent {silent_min:.0f} min " \
+                   f"(window {window} min)"
+        else:
+            raise Refused("--kind must be directive | director | manager-fallback "
+                          "(Charter §5)", EXIT_ERR)
+
+        if kind != "manager-fallback" and cur > 8:
+            raise Refused(f"{vid} is past the gate (stage {cur}) — approval belongs at "
+                          "stage 8 -> 9", EXIT_REFUSED)
+
+        base = self.read_bytes(rel)
+        pub.update(approval_kind=kind, approved_by=approver, approved_ts=z(),
+                   directive_ref=(ref or None) if kind == "directive" else pub.get("directive_ref"))
+        advanced = False
+        if cur == 8:
+            v["stage"] = 9
+            v["stage_name"] = STAGES[8]
+            v["history"].append({"ts": z(), "stage": 9, "by": by,
+                                 "evidence": f"{kind} approval by {approver}; {note}"})
+            advanced = True
+        self.write_json(rel, v)
+        try:
+            self.publish({rel: base}, f"video: {vid} publish-approved ({kind} by {approver})")
+        except Conflict as e:
+            raise Refused(str(e), EXIT_CONFLICT)
+        if advanced:
+            print(f"APPROVED + ADVANCED {vid}: stage 8 -> 9 publish-approved "
+                  f"(kind={kind}, approver={approver})")
+        else:
+            print(f"PRE-AUTHORIZED {vid} (kind={kind}, approver={approver}) — the video "
+                  f"passes the gate when it reaches stage 8 -> 9 (currently stage {cur})")
+        return EXIT_OK
+
+    def video_show(self, vid):
+        v = self._video(vid)
+        print(f"{v['id']} — {v.get('title')}")
+        print(f"  channel {v.get('channel')} · owner {v.get('owner')} · "
+              f"stage {v.get('stage')}/13 {v.get('stage_name')}")
+        pub = v.get("publish") or {}
+        if pub.get("approved_by"):
+            print(f"  approval: {pub.get('approval_kind')} by {pub.get('approved_by')} "
+                  f"at {pub.get('approved_ts')}"
+                  + (f" (ref {pub.get('directive_ref')})" if pub.get("directive_ref") else ""))
+        if pub.get("url"):
+            print(f"  url: {pub.get('url')} (verified {pub.get('verified_ts')})")
+        for h in v.get("history") or []:
+            ex = f" [executor: {h['executor']}]" if h.get("executor") else ""
+            print(f"  {h['ts']}  stage {h['stage']:>2}  {h['by']:<12} {h.get('evidence','')[:70]}{ex}")
+        return EXIT_OK
+
+
     def status(self):
         lock = self.lock_now()
         d = self.root / "world"
@@ -562,9 +829,18 @@ def main(argv=None) -> int:
     p.add_argument("--generation", required=True, type=int)
 
     p = sub.add_parser("video"); vid = p.add_subparsers(dest="vcmd", required=True)
-    for name in ("new", "advance", "publish-approved", "show"):
-        vp = vid.add_parser(name)
-        vp.add_argument("args", nargs="*")
+    vp = vid.add_parser("new")
+    vp.add_argument("--title", required=True); vp.add_argument("--channel", required=True)
+    vp.add_argument("--by", required=True); vp.add_argument("--evidence", required=True)
+    vp = vid.add_parser("advance")
+    vp.add_argument("vid"); vp.add_argument("--to", required=True)
+    vp.add_argument("--by", required=True); vp.add_argument("--evidence", required=True)
+    vp.add_argument("--url", default=None)
+    vp = vid.add_parser("publish-approved")
+    vp.add_argument("vid"); vp.add_argument("--by", required=True)
+    vp.add_argument("--kind", required=True, choices=("directive", "director", "manager-fallback"))
+    vp.add_argument("--ref", default=None); vp.add_argument("--pinged-ts", default=None)
+    vp = vid.add_parser("show"); vp.add_argument("vid")
 
     args = ap.parse_args(argv)
     w = World(Path(args.root), agent=args.agent, push=not args.no_push)
@@ -606,9 +882,16 @@ def main(argv=None) -> int:
                     "status": w.pc_status,
                     "check-token": lambda: w.pc_check_token(args.token, args.generation)}[args.pccmd]()
         if args.cmd == "video":
-            print("M-PIPE owns the video pipeline (card t-20261015-0bc7, docs/WORLD.md §2) — "
-                  "not built yet.", file=sys.stderr)
-            return 2
+            if args.vcmd == "new":
+                return w.video_new(args.title, args.channel, args.by, args.evidence)
+            if args.vcmd == "advance":
+                return w.video_advance(args.vid, args.to, args.by, args.evidence,
+                                       url=args.url)
+            if args.vcmd == "publish-approved":
+                return w.video_publish_approved(args.vid, args.by, args.kind,
+                                                ref=args.ref, pinged_ts=args.pinged_ts)
+            if args.vcmd == "show":
+                return w.video_show(args.vid)
     except Refused as e:
         print(f"refused: {e}", file=sys.stderr)
         return e.code

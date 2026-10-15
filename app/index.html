@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Outpost Mars</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%23b45309'/><circle cx='12' cy='13' r='3' fill='%23fbbf24'/></svg>">
+<link rel="stylesheet" href="./app.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">
+      <span class="dot" id="dot"></span>
+      <h1>OUTPOST <span class="mars">MARS</span></h1>
+    </div>
+    <div class="meta">
+      <span id="fresh" class="mono">loading…</span>
+      <span id="counts" class="mono"></span>
+    </div>
+  </header>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <main>
+    <section class="map-wrap" aria-label="the colony">
+      <div id="map" class="map"></div>
+      <p class="legend small dim">
+        every marker on this map is a record under <span class="mono">world/</span> —
+        nothing here is simulated (CHARTER §3). click any marker to read its source record.
+      </p>
+    </section>
+    <aside id="panels" class="panels"></aside>
+  </main>
+
+  <div id="drawer" class="drawer hidden" role="dialog" aria-modal="true">
+    <div class="drawer-card">
+      <div class="drawer-head">
+        <span id="drawer-title" class="mono"></span>
+        <button id="drawer-close" class="btn">close</button>
+      </div>
+      <div id="drawer-body"></div>
+    </div>
+  </div>
+
+  <footer>
+    <span class="small dim">compiled from world/ · push is the clock · world_head <span id="head" class="mono">-</span></span>
+  </footer>
+</div>
+<script src="./app.js"></script>
+</body>
+</html>

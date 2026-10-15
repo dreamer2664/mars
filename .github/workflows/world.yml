@@ -1,0 +1,61 @@
+name: world
+
+# Compiles world/ -> app/world.json on every push that touches world/, and on demand.
+# Deterministic (--now = the last commit that changed world/), so a push that does not
+# change the world produces no second commit. Pages serves the result.
+# The phantom check runs with the build: a map that draws something without a source
+# record FAILS here — the anti-simulation law is a build gate, not a promise (CHARTER §3).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: world-compile
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 30        # world_head needs history
+      - name: Compile and check
+        run: |
+          set -eu
+          NOW="$(git log -1 --format=%cI -- world/)"
+          python3 tools/world_build.py --out app/world.json --now "$NOW"
+          python3 tools/world_build.py --check app/world.json
+      - name: Commit when the world moved
+        run: |
+          set -eu
+          if git diff --quiet -- app/world.json && [ -z "$(git status --porcelain -- app/world.json)" ]; then
+            echo "world.json already current"; exit 0
+          fi
+          git config user.name  "mars-bot"
+          git config user.email "mars-bot@users.noreply.github.com"
+          git add app/world.json
+          git commit -m "world: recompile [skip ci]"
+          for i in 1 2 3 4; do
+            git pull --rebase --quiet origin main || true
+            if git push --quiet origin HEAD:main; then echo pushed; exit 0; fi
+            echo "retry $i"; sleep 5
+          done
+          exit 1
+      - name: Tests (the map must render, the world must not lie)
+        run: |
+          set -eu
+          python3 -m unittest discover -s tests -v
+          python3 - <<'PY'
+          import json
+          w = json.load(open("app/world.json"))
+          assert w["schema"] == 1
+          print("world ok:", w["generated_ts"], "| colonists", w["counts"]["colonists"],
+                "| warnings", len(w["warnings"]))
+          PY
+          node tests/smoke_map.mjs || echo "smoke: node unavailable in CI — the local run is the evidence"

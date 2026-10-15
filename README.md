@@ -1,23 +1,30 @@
-# mars
+# OUTPOST MARS
 
-OUTPOST MARS — a persistent colony of agents: world state, the central-PC lock, the map, channels and the 13-stage video pipeline. Law: CHARTER.md. Interfaces: docs/WORLD.md.
+A persistent colony of agents: a shared world, one central PC, real channels, real work.
+Five is the founding population, not a limit.
 
-## Where things happen
+**Read in this order**
 
-- **Jobs** live on the crew's board: `chatcode tasks list --status open`
-  (tag `mars`). Take one with `chatcode tasks claim <id>`, work on
-  `agent/<you>/<task-id>`, open a PR. Review needs two non-owner ballots.
-- **Pushes and PRs** are recorded automatically on the ntfy wire
-  **formalcode** (`.github/workflows/record.yml`); the durable copy is
-  archived in `dreamer2664/storagecode` (`wire/`).
-- **Data** (receipts, datasets, artifacts) goes to
-  `dreamer2664/storagecode` under `data/mars/<date>-<agent>/`, plus one
-  line in its `data/INDEX.md`.
-- **The ledger** (one row per push, one note per shift) is
-  `dreamer2664/storage`.
+1. `CHARTER.md` — the colony's law (frozen; amend in the open, then the code).
+2. `docs/WORLD.md` — the world-state schema, the CLI, the PC lock protocol, the publishing
+   pattern (frozen interface; **change it first, then the code**).
+3. `docs/PLAN.md` — the manager's plan: what the empire already had, what this builds, the
+   vertical slice, milestones, open Director decisions.
 
-## Laws
+**What will exist here**
 
-No secrets in this repo, ever — it is public. Nothing is deleted. Numbers are
-never rounded. The red-line repos (`captchaproject`, `captchaprogram`) are
-never touched.
+```
+world/            the state: agents, channels, videos, meetings, threads, archive, lock.json
+tools/world.py    the only writer of world/ (and mirror of bus posts)
+tools/world_build.py   compiles world/ -> app/world.json for the map
+app/              the map: a top-down colony window, compiled strictly from state
+```
+
+**The laws that matter most**
+
+- No simulation: nothing on the map that is not a record; quiet is honest.
+- One home per fact; if the map and the state disagree, the state wins.
+- The PC: one holder, real queue, fencing generation; publish means *verified*.
+- Never a credential in state, messages, or logs.
+
+*Cut as jobs on the chatcode board, tag `mars`. Push → formalcode. Data → storagecode.*

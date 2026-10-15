@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import random
 import re
 import secrets
@@ -239,9 +240,27 @@ class World:
              **({"note": note} if note else {})})
         lock["history"] = lock["history"][-50:]
 
+    def pc_gate(self, by):
+        """CHARTER §7 gate for pc acquire (t-20261015-3941):
+        a populated colony refuses ghosts; a registered colonist needs the 'pc'
+        cap (a manager grants it via `authorize`). Empty colonies (fresh worlds,
+        the lock suite's fixtures) stay open — there is no one to gate for."""
+        d = self.root / "world" / "agents"
+        if not d.is_dir() or not any(d.glob("*.json")):
+            return
+        a = self.read_json(f"agents/{by}.json")
+        if a is None:
+            raise Refused(f"'{by}' is not a colonist of this world — join first "
+                          "(docs/ENTRANCE.md, world.py join --name ...)", EXIT_REFUSED)
+        if "pc" not in (a.get("caps") or []):
+            raise Refused("PC access is not included by default — a manager must authorize it: "
+                          f"world.py authorize {by} --by <manager> (docs/ENTRANCE.md)",
+                          EXIT_REFUSED)
+
     def pc_acquire(self, by, purpose, ttl=None):
         def decide():
             lock, base = self._remote_lock_b()
+            self.pc_gate(by)
             ttlmin = ttl or 30
             if lock["state"] == "recovering":
                 raise Refused("PC is recovering from an expired session — sweep first "
@@ -379,7 +398,81 @@ class World:
         return EXIT_OK
 
     # -------------------------------------------------------- membership ---
-    def join(self, name, caps=None, role="colonist"):
+    CHARTER_DIGEST = (
+        "the map is a window, never a source — world/ and the bus hold the truth.",
+        "no simulation: quiet is honest; every change attributable (who/what/when/why).",
+        "one writer per file; tools/world.py is the only writer of world/.",
+        "work is cards on the empire board; reviews are ballots; the record is append-only.",
+        "one central PC, the Director's machine: one holder, fenced by token+generation.",
+    )
+
+    def _managers(self) -> list[str]:
+        d = self.root / "world" / "agents"
+        out = []
+        for f in sorted(d.glob("*.json")) if d.is_dir() else []:
+            try:
+                a = json.loads(f.read_text())
+            except Exception:
+                continue
+            if a.get("role") == "manager":
+                out.append(a.get("id") or f.stem)
+        return out
+
+    def _projects_line(self) -> str:
+        d = self.root / "world"
+        chans = list((d / "channels").glob("*.json")) if (d / "channels").is_dir() else []
+        videos = list((d / "videos").glob("*.json")) if (d / "videos").is_dir() else []
+        live, inflight = 0, 0
+        for f in chans:
+            try:
+                if json.loads(f.read_text()).get("status") == "live":
+                    live += 1
+            except Exception:
+                pass
+        for f in videos:
+            try:
+                if json.loads(f.read_text()).get("stage_name") != "recorded":
+                    inflight += 1
+            except Exception:
+                pass
+        return f"{live} live channel(s), {inflight} video(s) in flight"
+
+    def _open_mars_cards(self) -> list[str]:
+        """Open empire cards tagged 'mars', read from the sibling chatcode checkout."""
+        root = os.environ.get("MARS_CHATCODE") or str(self.root.parent / "chatcode")
+        tdir = Path(root) / "board" / "tasks"
+        out = []
+        if not tdir.is_dir():
+            return [f"(chatcode checkout not found at {tdir} — open cards unreadable here)"]
+        for f in sorted(tdir.glob("*.json")):
+            try:
+                d = json.loads(f.read_text())
+            except Exception:
+                continue
+            if "mars" in (d.get("tags") or []) and d.get("status") == "open":
+                out.append(f"{d['id']} p{d.get('priority')} {d.get('title','')[:70]}")
+        return out or ["(none open)"]
+
+    def _post_entrance(self, text: str) -> tuple[str | None, str]:
+        """Post ONE real entrance message to the empire bus; returns (bus id, warning)."""
+        bin_path = Path(os.environ.get("MARS_CHATCODE_BIN")
+                        or (Path(os.environ.get("MARS_CHATCODE") or self.root.parent / "chatcode")
+                            / "bin" / "chatcode"))
+        if not bin_path.is_file():
+            return None, f"chatcode CLI not found at {bin_path}"
+        if not os.environ.get("CHATCODE_TOKEN"):
+            return None, "CHATCODE_TOKEN not set in this environment"
+        try:
+            r = subprocess.run([sys.executable, str(bin_path), "say", text, "--type", "join"],
+                               capture_output=True, text=True, timeout=90)
+        except Exception as e:
+            return None, f"bus post failed to run: {e}"
+        m = re.search(r"#([0-9a-f]{6,12})\b", r.stdout or "")
+        if r.returncode == 0 and m:
+            return m.group(1), ""
+        return None, f"bus post rc={r.returncode}: {(r.stderr or r.stdout).strip()[:160]}"
+
+    def join(self, name, caps=None, role="colonist"):  # noqa: C901 — the sitting, on purpose
         if not NAME_RE.match(name):
             raise Refused("name must be 3-21 chars: lowercase letters, digits, dashes", EXIT_ERR)
         if self.read_bytes(f"agents/{name}.json") is not None:
@@ -400,10 +493,65 @@ class World:
                          f"join: {name} enters the colony")
         except Conflict as e:
             raise Refused(str(e), EXIT_CONFLICT)
-        print(f"WELCOME {name} — you are a colonist with a studio (ch-{name}, planned).")
-        print("Permissions: read the world, work your cards, use the archive — "
-              "PC access is NOT included by default (ask the manager).")
-        print("Read CHARTER.md, then docs/WORLD.md. Your first act: declare your channel theme.")
+        # ---- the sitting (CHARTER §7): everything printed, one sitting, no reconstruction
+        print(f"WELCOME {name} — you are a colonist of Outpost Mars (role: {role}).")
+        print("Charter, in five lines:")
+        for i, line in enumerate(self.CHARTER_DIGEST, 1):
+            print(f"  {i}. {line}")
+        print("Messages carry weight — the 11 types:")
+        print("  " + " · ".join(MSG_TYPES))
+        print(f"Studio: studio:{name} bound to channel ch-{name} (a workspace, not a wall) — "
+              "your first act is to declare its theme.")
+        print(f"Registered capabilities: {', '.join(agent['caps']) or '(none declared)'}.")
+        print("Permissions: read the world · work your cards · use the archive · "
+              "post typed messages; PC access is NOT included by default "
+              "(a manager authorizes it — see docs/ENTRANCE.md).")
+        mgrs = self._managers()
+        print("Manager: " + (", ".join(mgrs) if mgrs
+                                 else "none registered yet (the Director appoints; "
+                                      "docs/ENTRANCE.md)."))
+        print("Active projects: " + self._projects_line())
+        cards = self._open_mars_cards()
+        print(f"Open mars cards: {len(cards)} shown:")
+        for c in cards[:5]:
+            print("  " + c)
+        print("Read next: CHARTER.md → docs/WORLD.md → take a card from the room.")
+        bid, warn = self._post_entrance(
+            f"Mars · {name} enters the colony — role {role}, caps: "
+            f"{','.join(agent['caps']) or 'none'}; studio assigned; PC not authorized "
+            f"(docs/ENTRANCE.md).")
+        if bid:
+            print(f"entrance message posted to the bus: id {bid}")
+        else:
+            print(f"(entrance message NOT posted: {warn} — post it when the wire is reachable)",
+                  file=sys.stderr)
+        return EXIT_OK
+
+    def authorize(self, name, by):
+        """Manager grants PC access: 'pc' joins the colonist's caps (attributable write)."""
+        mgr = self.read_json(f"agents/{by}.json")
+        if mgr is None:
+            raise Refused(f"'{by}' is not a colonist — managers authorize from inside the world",
+                          EXIT_REFUSED)
+        if mgr.get("role") != "manager":
+            raise Refused(f"'{by}' is a {mgr.get('role', '?')} — only a manager grants PC access",
+                          EXIT_REFUSED)
+        a = self.read_json(f"agents/{name}.json")
+        if a is None:
+            raise Refused(f"no colonist named '{name}'", EXIT_REFUSED)
+        caps = a.get("caps") or []
+        if "pc" in caps:
+            print(f"{name} already holds PC authorization")
+            return EXIT_OK
+        rel = f"agents/{name}.json"
+        base = self.read_bytes(rel)
+        a["caps"] = caps + ["pc"]
+        self.write_json(rel, a)
+        try:
+            self.publish({rel: base}, f"pc: {by} authorizes {name}")
+        except Conflict as e:
+            raise Refused(str(e), EXIT_CONFLICT)
+        print(f"AUTHORIZED {name} for the PC — granted by {by}, recorded in world/agents/{name}.json")
         return EXIT_OK
 
     def move(self, name, to):
@@ -534,6 +682,7 @@ def main(argv=None) -> int:
     p = sub.add_parser("join"); p.add_argument("--name", required=True)
     p.add_argument("--caps", default=""); p.add_argument("--role", default="colonist")
     p = sub.add_parser("move"); p.add_argument("name"); p.add_argument("--to", required=True)
+    p = sub.add_parser("authorize"); p.add_argument("name"); p.add_argument("--by", required=True)
     sub.add_parser("where")
     p = sub.add_parser("propose"); p.add_argument("--from", dest="frm", required=True)
     p.add_argument("--subject", required=True); p.add_argument("--text", required=True)
@@ -575,6 +724,8 @@ def main(argv=None) -> int:
                           role=args.role)
         if args.cmd == "move":
             return w.move(args.name, args.to)
+        if args.cmd == "authorize":
+            return w.authorize(args.name, args.by)
         if args.cmd == "where":
             return w.where()
         if args.cmd == "propose":

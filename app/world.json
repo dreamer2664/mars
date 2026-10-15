@@ -44,19 +44,6 @@
       "status": "active"
     },
     {
-      "_source": "world/agents/dryrun.json",
-      "caps": [
-        "research"
-      ],
-      "channel": "ch-dryrun",
-      "id": "dryrun",
-      "last_seen_ts": "2026-10-15T14:44:01Z",
-      "location": "entrance",
-      "note": "",
-      "role": "colonist",
-      "status": "active"
-    },
-    {
       "_source": "world/agents/odysseus.json",
       "caps": [
         "review",
@@ -126,15 +113,6 @@
       "title": "cormac — planned"
     },
     {
-      "_source": "world/channels/ch-dryrun.json",
-      "key": "ch-dryrun",
-      "note": "theme to be declared by the colonist",
-      "owner": "dryrun",
-      "status": "planned",
-      "themes": [],
-      "title": "dryrun — planned"
-    },
-    {
       "_source": "world/channels/ch-odysseus.json",
       "key": "ch-odysseus",
       "note": "theme to be declared by the colonist at first wake",
@@ -155,13 +133,13 @@
   ],
   "counts": {
     "archive": 0,
-    "channels": 7,
-    "colonists": 6,
+    "channels": 6,
+    "colonists": 5,
     "meetings": 0,
     "threads_open": 0,
     "videos": 0
   },
-  "generated_ts": "2026-10-15T14:44:01Z",
+  "generated_ts": "2026-10-15T14:45:12Z",
   "lock": {
     "expires_ts": null,
     "generation": 0,
@@ -179,5 +157,5 @@
   "threads": [],
   "videos": [],
   "warnings": [],
-  "world_head": "7775c0d39e"
+  "world_head": "ba70573637"
 }

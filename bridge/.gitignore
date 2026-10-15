@@ -1,0 +1,5 @@
+# Receipts are per-action records from a live run on the Director's machine.
+# They are evidence, not source: never committed (screenshots likewise stay
+# local, docs/BRIDGE.md §3). Tests write receipts to temp dirs.
+receipts/
+__pycache__/

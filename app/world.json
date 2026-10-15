@@ -139,7 +139,7 @@
     "threads_open": 0,
     "videos": 0
   },
-  "generated_ts": "2026-10-15T12:40:26Z",
+  "generated_ts": "2026-10-15T14:14:56Z",
   "lock": {
     "expires_ts": null,
     "generation": 0,
@@ -157,5 +157,5 @@
   "threads": [],
   "videos": [],
   "warnings": [],
-  "world_head": "ba70573637"
+  "world_head": "4ff13c5bcf"
 }

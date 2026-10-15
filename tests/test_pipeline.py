@@ -157,6 +157,24 @@ class Scratch(unittest.TestCase):
         self.advance(vid, 9)                         # now legal: approval exists
         self.assertEqual(self.read_video(vid)["stage"], 9)
 
+    def test_pre_authorized_video_cannot_jump_to_9(self):
+        # argus review (PR #1): the stage-9 gate must check ORDER too — a
+        # pre-authorization recorded at stage 2 may not skip 3-8 in one command
+        vid = self.new_video()                      # stage 1
+        run(["--no-push", "--root", str(self.dir), "video", "publish-approved", vid,
+             "--by", "nova", "--kind", "directive", "--ref", "bus-abc123"])
+        self.assertEqual(self.read_video(vid)["stage"], 1)
+        code, out, err = run(["--no-push", "--root", str(self.dir), "video", "advance",
+                              vid, "--to", "9", "--by", "nova", "--evidence", "jump"])
+        self.assertEqual(code, 4)
+        self.assertIn("illegal transition 1 -> 9: publish-approved comes straight "
+                      "after final-review", err)
+        self.assertEqual(self.read_video(vid)["stage"], 1)   # unmoved
+        # and only after honestly reaching 8 does the gate open
+        self.advance(vid, 8)
+        self.advance(vid, 9)
+        self.assertEqual(self.read_video(vid)["stage"], 9)
+
     def test_director_approves_at_the_gate(self):
         vid = self.new_video()
         self.advance(vid, 8)

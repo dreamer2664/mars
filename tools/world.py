@@ -591,6 +591,11 @@ class World:
         if n <= 8:                                   # middle stages: shorten, never skip silently
             pass
         elif n == 9:
+            if cur != 8:
+                raise Refused(f"illegal transition {cur} -> 9: publish-approved comes "
+                              "straight after final-review (pre-authorization is recorded "
+                              "early, but the gate itself is only crossed at stage 8)",
+                              EXIT_REFUSED)
             if not (v.get("publish") or {}).get("approved_by"):
                 raise Refused("stage 9 is the approval gate — record it first with "
                               "`world.py video publish-approved` (Charter §5)", EXIT_REFUSED)

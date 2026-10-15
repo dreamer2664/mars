@@ -16,7 +16,9 @@ world/
   meetings/<id>.json      one per decision            (subject, participants, outcome)
   threads/<id>.json       one per significant thread  (typed messages, mirrored from the bus)
   archive/<id>.json       one per research/asset item (owner, tags, deposit pointer)
+  receipts/<id>.json      one per published video     (written at stage 13; stub until the bridge)
   lock.json               the PC                       (holder, queue, generations)
+  contract.json           the authorization contract   (who may approve stage 9 — see §2b)
 app/world.json            compiled for the map         (written by tools/world_build.py)
 tools/world.py            the only writer of world/    (and mirror of bus posts)
 tools/world_build.py      deterministic compiler       (world/ -> app/world.json)
@@ -84,6 +86,56 @@ the record). The CLI refuses an unnamed or unauthorized approver. Stage 12 requi
 **verified** url. Stage 13 writes the receipt into the ledger. Simple formats may shorten the middle
 stages, but transitions stay explicit and recorded — never skipped silently.
 
+**The 13-stage transition table** (what `video advance` refuses — the machine, not the
+mood):
+
+| to | legal when | extra requirement |
+|---|---|---|
+| 2–8 | current < to (middle stages may be shortened, never skipped silently) | evidence |
+| 9 | current == 8 **and** an approval record already exists (`video publish-approved`) | — |
+| 10 | current == 9 | the PC lock is **held by `--by`** with the video id in its purpose |
+| 11 | current == 10 | evidence (the upload receipt / url) |
+| 12 | current == 11 | `--url` (http/https) → sets `publish.url` + `publish.verified_ts` |
+| 13 | current == 12 | writes `world/receipts/<id>.json`, executor-labeled |
+
+Backwards transitions and re-entering a stage are refused. `video publish-approved`
+itself enforces Charter §5 against `world/contract.json` (§2b below): `director`
+approval must come from the Director named in the contract; `manager-fallback` must
+come from the manager **and** after the silence window (`--pinged-ts` + the contract's
+`fallback_silence_min`); a `directive` must carry its `directive_ref` and is recorded
+with the Director as approver. Until the bridge lands (docs/BRIDGE.md), stages 12 and
+13 run on the **stub executor**: it writes real, auditable records — every one labeled
+`executor: "stub"` in the history entry, in the receipt, and on the map.
+
+## 2b. The authorization contract (`world/contract.json`)
+
+```jsonc
+{ "schema": 1,
+  "director": "carlo",            // the only `director`-kind approver (Charter §5)
+  "manager": "vesta",             // manager-fallback approver; contract's owner
+  "approval_delegation": null,    // or {"video": "vid-...", "to": "<name>", "ts": "...", "by": "vesta"}
+  "fallback_silence_min": 45,     // the Director's silence window before fallback is legal
+  "updated_ts": "...Z", "updated_by": "..." }
+```
+
+The contract is the single place stage-9 authorization lives. A delegation recorded
+here lets the named agent approve that one video at the gate (`director` kind, noted).
+Amendments are the manager's, in the open, with a commit message saying why.
+
+## 2c. The publish receipt (`world/receipts/<id>.json`, written at stage 13)
+
+```jsonc
+{ "schema": 1, "id": "rc-...", "video": "vid-...", "title": "", "channel": "ch-...",
+  "url": "", "verified_ts": "...Z",
+  "approval": { "kind": "directive|director|manager-fallback", "by": "", "ts": "...Z",
+                "directive_ref": null },
+  "pc": { "generation": 0, "holder": "" },
+  "executor": "stub",             // "bridge" when the real executor performs it
+  "deposit": { "target": "storagecode", "status": "stub-local" },
+  "created_ts": "...Z" }
+```
+
+
 ## 3. The CLI — `tools/world.py` (the only writer)
 
 ```
@@ -96,9 +148,12 @@ world.py pc status | queue | cancel --by <n> | sweep --by <n>
 world.py propose --from <n> --subject "..." [--refs task=...,video=...] [--to <n|*>]
 world.py respond --thread <id> --from <n> --type <t> --text "..." [--evidence <path|url>]
 world.py decide --meeting <id> --by <n> --outcome "..."
-world.py video new --title "..." --channel ch-... --by <n>
-world.py video advance <vid> --to <stage> --by <n> --evidence "..."
-world.py video publish-approved <vid> --by <n>          # Director-gated per Charter §5
+world.py video new --title "..." --channel ch-... --by <n> --evidence "thread th-... | path | url"
+world.py video advance <vid> --to <stage#|name> --by <n> --evidence "..."   # the 13-stage machine (§2 table)
+world.py video advance <vid> --to 12 --by <n> --url https://...             # stage 12 sets url + verified_ts
+world.py video publish-approved <vid> --by <n> --kind directive|director|manager-fallback \
+                                   [--ref <bus/ntfy id>] [--pinged-ts "...Z"]   # Charter §5 gate
+world.py video show <vid>
 world.py archive add --title "..." --by <n> [--tags a,b] [--deposit <storagecode path>]
 world.py status                                        # one screen: colony, PC, queue, open threads
 ```

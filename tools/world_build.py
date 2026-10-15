@@ -118,6 +118,8 @@ def compile_world(root: Path, now_iso: str) -> dict:
                            "owner": v.get("owner"), "stage": v.get("stage"),
                            "stage_name": v.get("stage_name"),
                            "updated_ts": (hist[-1]["ts"] if hist else None),
+                           # M-PIPE: anything the stub executor recorded must be visible
+                           "stub": any(h.get("executor") == "stub" for h in hist),
                            "_source": v["_source"]})
     videos_out.sort(key=lambda v: (v.get("stage") or 0, v.get("id") or ""))
 

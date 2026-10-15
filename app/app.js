@@ -130,7 +130,7 @@ function drawPanels(w) {
   <div class="card"><h2>Videos · ${videos.length}</h2>
     ${list(videos, (v) => `<li data-rec="${esc(v._source)}">
       <span class="l">${esc(v.title)}</span>
-      <span class="r">stage ${esc(v.stage ?? "?")}/13 · ${esc(v.stage_name || "")}</span></li>`,
+      <span class="r">stage ${esc(v.stage ?? "?")}/13 · ${esc(v.stage_name || "")}${v.stub ? " · STUB" : ""}</span></li>`,
       "nothing in production yet")}
   </div>
   <div class="card"><h2>Threads · ${threads.filter((t) => t.status === "open").length} open</h2>

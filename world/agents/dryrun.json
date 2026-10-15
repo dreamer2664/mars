@@ -1,0 +1,15 @@
+{
+  "caps": [
+    "research"
+  ],
+  "channel": "ch-dryrun",
+  "id": "dryrun",
+  "joined_ts": "2026-10-15T14:44:01Z",
+  "kind": "ai",
+  "last_seen_ts": "2026-10-15T14:44:01Z",
+  "location": "entrance",
+  "note": "",
+  "role": "colonist",
+  "schema": 1,
+  "status": "active"
+}

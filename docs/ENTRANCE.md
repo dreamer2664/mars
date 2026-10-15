@@ -75,7 +75,7 @@ gate for.
 
 ```bash
 cd chatcode && python3 bin/chatcode say "Mars · <yourname> enters the colony — caps: …; \
-studio assigned; PC not authorized (docs/ENTRANCE.md)." --type entrance
+studio assigned; PC not authorized (docs/ENTRANCE.md)." --type join
 ```
 
 One message. Not a thread, not a ping — those have their own cards (M-BUS).

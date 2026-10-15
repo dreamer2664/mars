@@ -463,7 +463,7 @@ class World:
         if not os.environ.get("CHATCODE_TOKEN"):
             return None, "CHATCODE_TOKEN not set in this environment"
         try:
-            r = subprocess.run([sys.executable, str(bin_path), "say", text, "--type", "entrance"],
+            r = subprocess.run([sys.executable, str(bin_path), "say", text, "--type", "join"],
                                capture_output=True, text=True, timeout=90)
         except Exception as e:
             return None, f"bus post failed to run: {e}"

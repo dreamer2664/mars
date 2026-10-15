@@ -24,7 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import world  # noqa: E402
 
-OK_STUB = "#!/usr/bin/env python3\nimport sys\nprint('✓ #abcd1234 → bus/general.jsonl (301 messages in channel)')\nsys.exit(0)\n"
+OK_STUB = ("#!/usr/bin/env python3\nimport sys, pathlib\n"
+           "pathlib.Path(sys.argv[0] + '.argv.txt').write_text('\\n'.join(sys.argv[1:]))\n"
+           "print('✓ #abcd1234 → bus/general.jsonl (301 messages in channel)')\nsys.exit(0)\n")
 FAIL_STUB = "#!/usr/bin/env python3\nimport sys\nprint('error: rate limit hit', file=sys.stderr)\nsys.exit(1)\n"
 
 
@@ -109,11 +111,18 @@ class BusSeam(Scratch):
         return str(stub)
 
     def test_entrance_message_posts_once_and_bus_id_prints(self):
-        env = {"MARS_CHATCODE_BIN": self._stub(OK_STUB), "CHATCODE_TOKEN": "x"}
+        stub = self._stub(OK_STUB)
+        env = {"MARS_CHATCODE_BIN": stub, "CHATCODE_TOKEN": "x"}
         code, out, err = self.join(env=env)
         self.assertEqual(code, 0, err)
         self.assertIn("entrance message posted to the bus: id abcd1234", out)
         self.assertNotIn("NOT posted", err)
+        # pin the exact CLI invocation: one say, legal chatcode type 'join'
+        argv_sent = Path(stub + ".argv.txt").read_text().splitlines()
+        self.assertEqual(argv_sent[0], "say")
+        tpos = argv_sent.index("--type")
+        self.assertEqual(argv_sent[tpos + 1], "join",
+                         "chatcode say accepts only its enum types; 'entrance' is invalid")
 
     def test_post_failure_never_fails_the_join(self):
         env = {"MARS_CHATCODE_BIN": self._stub(FAIL_STUB), "CHATCODE_TOKEN": "x"}

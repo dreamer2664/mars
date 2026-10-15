@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import random
 import re
 import secrets
@@ -80,10 +81,12 @@ class Conflict(Exception):
 
 
 class World:
-    def __init__(self, root: Path, agent: str | None = None, push: bool = True):
+    def __init__(self, root: Path, agent: str | None = None, push: bool = True,
+                 bus: Path | None = None):
         self.root = root.resolve()
         self.agent = agent
         self.push = push and (self.root / ".git").exists()
+        self.bus = Path(bus).resolve() if bus else None
         self._origin = None
         if self.push:
             r = self._git("remote", "get-url", "origin", check=False)
@@ -441,22 +444,139 @@ class World:
         return EXIT_OK
 
     # ---------------------------------------------------------- the bus ---
-    def propose(self, frm, subject, text, to=None, refs=None):
+    # M-BUS (t-20261015-2296): one action, two records, no drift. Every significant
+    # message is posted on the real bus FIRST (chatcode say --repo-dir, then commit +
+    # auth-injected push), and only then mirrored into world/threads/<id>.json carrying
+    # the bus id. A required response counts ONLY when it carries a bus id (docs/COMMS.md).
+    BUS_CHANNEL = "general"
+
+    def _bus_ready(self) -> bool:
+        """A configured bus needs CHATCODE_TOKEN in the environment — never on argv."""
+        if self.bus is None:
+            return False
+        if not os.environ.get("CHATCODE_TOKEN"):
+            raise Refused("--bus needs CHATCODE_TOKEN in the environment "
+                          "(never on the command line, never committed)", EXIT_ERR)
+        return True
+
+    def _bus_git(self, *args, check=True):
+        r = subprocess.run(["git", "-C", str(self.bus), *args],
+                           capture_output=True, text=True, timeout=120)
+        if check and r.returncode != 0:
+            raise Refused(f"bus git {args[0]} failed: {(r.stderr or r.stdout).strip()[:200]}",
+                          EXIT_ERR)
+        return r
+
+    def _post_bus(self, frm, mtype, text, ref, reply_to=None, subject=None):
+        """Post one typed message on the real bus; return its bus id (None if no bus).
+
+        The caller mirrors the returned id into the thread file immediately after —
+        the bus copy is the record of fact for the gate.
+        """
+        if not self._bus_ready():
+            print("NOT mirrored: no bus configured (--bus <chatcode checkout>) — "
+                  "this message will not satisfy any required response",
+                  file=sys.stderr)
+            return None
+        self._bus_git("pull", "-q", "--rebase", "origin", "main", check=False)
+        line = f"[{mtype}] {subject}: {text}" if subject else f"[{mtype}] {text}"
+        cmd = [sys.executable, str(self.bus / "bin" / "chatcode"), "say",
+               "--repo-dir", str(self.bus), "-a", frm, "--type", "say",
+               "--ref", ref, "--"]
+        if reply_to:
+            cmd += ["--reply", reply_to]
+        cmd += [line]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            self._bus_git("checkout", "--", f"bus/{self.BUS_CHANNEL}.jsonl", check=False)
+            raise Refused(f"bus post failed ({(r.stderr or r.stdout).strip()[:200]}) — "
+                          "nothing written to the world; no drift", EXIT_ERR)
+        m = re.search(r"#([0-9a-f]{8})", r.stdout)
+        if not m:
+            self._bus_git("checkout", "--", f"bus/{self.BUS_CHANNEL}.jsonl", check=False)
+            raise Refused(f"could not read the bus id from: {r.stdout.strip()[:120]}", EXIT_ERR)
+        bus_id = m.group(1)
+        # commit + push the bus copy (auth is injected per-command by chatcode git)
+        self._bus_git("add", f"bus/{self.BUS_CHANNEL}.jsonl")
+        self._bus_git("-c", f"user.name={frm}", "-c", f"user.email={frm}@mars.local",
+                      "commit", "-q", "-m",
+                      f"bus({self.BUS_CHANNEL}): {frm} {mtype} (via world.py)", check=False)
+        for _ in range(3):
+            p = subprocess.run([sys.executable, str(self.bus / "bin" / "chatcode"), "git",
+                                "push", "origin", "main"], cwd=str(self.bus),
+                               capture_output=True, text=True, timeout=120)
+            if p.returncode == 0:
+                return bus_id
+            self._bus_git("pull", "-q", "--rebase", "origin", "main", check=False)
+        raise Refused("bus push failed after 3 tries — the bus copy is not public yet; "
+                      f"the message #{bus_id} must be pushed by hand from {self.bus}", EXIT_ERR)
+
+    @staticmethod
+    def _parse_require(spec):
+        """'scipio:evidence|approval,ariadne:disagreement' -> [{agent, types}] (validated)."""
+        out = []
+        for part in (spec or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" not in part:
+                raise Refused(f"--require entries look like agent:type|type — got '{part}'",
+                              EXIT_ERR)
+            agent, types = part.split(":", 1)
+            tl = [t.strip() for t in types.split("|") if t.strip()]
+            bad = [t for t in tl if t not in MSG_TYPES]
+            if bad:
+                raise Refused(f"--require types must be charter types ({', '.join(MSG_TYPES)}) "
+                              f"— got {', '.join(bad)}", EXIT_ERR)
+            if not agent or not tl:
+                raise Refused(f"--require entry incomplete: '{part}'", EXIT_ERR)
+            out.append({"agent": agent, "types": tl})
+        return out
+
+    @staticmethod
+    def _unmet_required(t):
+        """Requirements not yet satisfied. A response counts only when it is mirrored
+        on the bus (bus_id set) — a local-only reply is a draft, not a record (COMMS.md)."""
+        missing = []
+        for req in (t.get("required") or []):
+            met = any(m.get("bus_id") and m.get("from") == req.get("agent")
+                      and m.get("type") in (req.get("types") or [])
+                      for m in t.get("messages", []))
+            if not met:
+                missing.append(f"{req.get('agent')}:{'|'.join(req.get('types') or [])}")
+        return missing
+
+    def propose(self, frm, subject, text, to=None, refs=None, require=None):
         if self.read_json(f"agents/{frm}.json") is None:
             raise Refused(f"only colonists may file threads — '{frm}' is not registered", EXIT_REFUSED)
+        required = self._parse_require(require)
+        for req in required:
+            if self.read_json(f"agents/{req['agent']}.json") is None:
+                raise Refused(f"cannot require a response from '{req['agent']}' — "
+                              "not a colonist", EXIT_REFUSED)
         tid = new_id("th")
+        bus_id = self._post_bus(frm, "proposal", text, tid, subject=subject)
         thread = {"schema": SCHEMA, "id": tid, "subject": subject, "type": "proposal",
                   "from": frm, "to": to or ["*"],
                   "refs": refs or {"task": None, "video": None, "meeting": None},
-                  "status": "open",
-                  "messages": [{"ts": z(), "bus_id": None, "from": frm, "type": "proposal",
+                  "required": required,
+                  "status": "open", "resolved_by": None, "resolved_ts": None,
+                  "messages": [{"ts": z(), "bus_id": bus_id, "from": frm, "type": "proposal",
                                 "text": text, "reply_to": None}]}
         self.write_json(f"threads/{tid}.json", thread)
         try:
             self.publish({f"threads/{tid}.json": None}, f"thread: {frm} proposes '{subject}'")
         except Conflict as e:
+            if bus_id:
+                print(f"WARNING: bus #{bus_id} is posted but the world write failed ({e}) — "
+                      f"copy the message into world/threads/{tid}.json by hand; no silent drift")
             raise Refused(str(e), EXIT_CONFLICT)
         print(f"THREAD {tid} — {subject}")
+        if bus_id:
+            print(f"mirrored on the bus as #{bus_id}")
+        if required:
+            print("requires: " + ", ".join(f"{r['agent']}:{'|'.join(r['types'])}"
+                                           for r in required))
         return EXIT_OK
 
     def respond(self, tid, frm, mtype, text, reply_to=None):
@@ -468,15 +588,75 @@ class World:
             raise Refused(f"no thread {tid}", EXIT_REFUSED)
         if t.get("status") == "resolved":
             raise Refused(f"thread {tid} is resolved — file a new one", EXIT_REFUSED)
+        opening_bus = (t.get("messages") or [{}])[0].get("bus_id")
+        bus_id = self._post_bus(frm, mtype, text, tid, reply_to=opening_bus)
+        for attempt in (0, 1):
+            base = self.read_bytes(rel)
+            t = self.read_json(rel)
+            if t.get("status") == "resolved":
+                raise Refused(f"thread {tid} is resolved — file a new one", EXIT_REFUSED)
+            t["messages"].append({"ts": z(), "bus_id": bus_id, "from": frm, "type": mtype,
+                                  "text": text, "reply_to": reply_to})
+            self.write_json(rel, t)
+            try:
+                self.publish({rel: base}, f"thread {tid}: {frm} {mtype}")
+                break
+            except Conflict:
+                if attempt or not bus_id:
+                    if bus_id:
+                        print(f"WARNING: bus #{bus_id} is posted but the world write failed — "
+                              f"append the message to world/threads/{tid}.json by hand; "
+                              "no silent drift")
+                    raise Refused("the thread kept moving — try again", EXIT_CONFLICT)
+        print(f"ADDED to {tid} ({mtype})")
+        if bus_id:
+            print(f"mirrored on the bus as #{bus_id}")
+        return EXIT_OK
+
+    def close_thread(self, tid, by):
+        rel = f"threads/{tid}.json"
+        t = self.read_json(rel)
+        if t is None:
+            raise Refused(f"no thread {tid}", EXIT_REFUSED)
+        if t.get("status") == "resolved":
+            raise Refused(f"thread {tid} is already resolved", EXIT_REFUSED)
+        missing = self._unmet_required(t)
+        if missing:
+            raise Refused(f"thread {tid} cannot close yet — still requires: "
+                          f"{', '.join(missing)} (a response counts only when mirrored "
+                          "on the bus — carry --bus <chatcode checkout>)", EXIT_REFUSED)
         base = self.read_bytes(rel)
-        t["messages"].append({"ts": z(), "bus_id": None, "from": frm, "type": mtype,
-                              "text": text, "reply_to": reply_to})
+        t["status"] = "resolved"
+        t["resolved_by"] = by
+        t["resolved_ts"] = z()
         self.write_json(rel, t)
         try:
-            self.publish({rel: base}, f"thread {tid}: {frm} {mtype}")
+            self.publish({rel: base}, f"thread {tid}: resolved by {by}")
         except Conflict as e:
             raise Refused(str(e), EXIT_CONFLICT)
-        print(f"ADDED to {tid} ({mtype})")
+        print(f"RESOLVED {tid} (by {by})")
+        return EXIT_OK
+
+    def task_blocked(self, task_id):
+        """The task-closure gate: exit 4 while any open thread that references the task
+        still has unmet required responses. The colony runs this before completing a
+        dependent task — a completion over a red gate is a bug (docs/COMMS.md)."""
+        blockers = []
+        for p in sorted(self.path("threads").glob("th-*.json")):
+            t = json.loads(p.read_text())
+            if t.get("status") != "open":
+                continue
+            if (t.get("refs") or {}).get("task") != task_id:
+                continue
+            missing = self._unmet_required(t)
+            if missing:
+                blockers.append((t["id"], t.get("subject", ""), missing))
+        if blockers:
+            for tid, subject, missing in blockers:
+                print(f"BLOCKED by {tid} ({subject}): still requires {', '.join(missing)}")
+            raise Refused(f"task {task_id} is not clear to close — "
+                          f"{len(blockers)} gating thread(s) open", EXIT_REFUSED)
+        print(f"CLEAR — no open requirements on {task_id}")
         return EXIT_OK
 
     def decide(self, by, subject, outcome, refs=None):
@@ -580,6 +760,20 @@ class World:
         if by != v.get("owner") and by != contract.get("manager"):
             raise Refused(f"only the owner ({v.get('owner')}) or the manager may advance "
                           f"{vid} — you are '{by}'", EXIT_REFUSED)
+        # M-BUS: an open thread with unmet required responses that references this
+        # video gates every advance — a review in flight outranks momentum (COMMS.md).
+        for tp in sorted(self.path("threads").glob("th-*.json")):
+            th = json.loads(tp.read_text())
+            if th.get("status") != "open":
+                continue
+            if (th.get("refs") or {}).get("video") != vid:
+                continue
+            missing = self._unmet_required(th)
+            if missing:
+                raise Refused(f"video {vid} is gated by thread {th['id']} "
+                              f"({th.get('subject', '')}) — still requires: "
+                              f"{', '.join(missing)}; resolve the thread "
+                              f"(close-thread) or let the responses land", EXIT_REFUSED)
         cur = int(v.get("stage") or 0)
         if n <= cur:
             raise Refused(f"illegal transition {cur} -> {n}: stages never go backwards "
@@ -796,6 +990,9 @@ def main(argv=None) -> int:
     ap.add_argument("--root", default=".", help="the mars checkout (default: .)")
     ap.add_argument("--agent", default=None, help="act as this colonist")
     ap.add_argument("--no-push", action="store_true", help="local only (tests, dry runs)")
+    ap.add_argument("--bus", default=os.environ.get("MARS_BUS"),
+                    help="chatcode checkout for bus mirroring (or MARS_BUS); "
+                         "needs CHATCODE_TOKEN in the environment")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("join"); p.add_argument("--name", required=True)
@@ -805,9 +1002,15 @@ def main(argv=None) -> int:
     p = sub.add_parser("propose"); p.add_argument("--from", dest="frm", required=True)
     p.add_argument("--subject", required=True); p.add_argument("--text", required=True)
     p.add_argument("--to", default=""); p.add_argument("--refs", default="")
+    p.add_argument("--require", default="",
+                   help="responses the thread gates on: agent:type|type,... "
+                        "(satisfied only by bus-mirrored responses)")
     p = sub.add_parser("respond"); p.add_argument("--thread", required=True)
     p.add_argument("--from", dest="frm", required=True); p.add_argument("--type", required=True)
     p.add_argument("--text", required=True); p.add_argument("--reply-to", default=None)
+    p = sub.add_parser("close-thread"); p.add_argument("--thread", required=True)
+    p.add_argument("--by", required=True)
+    p = sub.add_parser("task-blocked"); p.add_argument("task_id")
     p = sub.add_parser("decide"); p.add_argument("--by", required=True)
     p.add_argument("--subject", required=True); p.add_argument("--outcome", required=True)
     p = sub.add_parser("archive"); asub = p.add_subparsers(dest="acmd", required=True)
@@ -843,7 +1046,8 @@ def main(argv=None) -> int:
     vp = vid.add_parser("show"); vp.add_argument("vid")
 
     args = ap.parse_args(argv)
-    w = World(Path(args.root), agent=args.agent, push=not args.no_push)
+    w = World(Path(args.root), agent=args.agent, push=not args.no_push,
+              bus=Path(args.bus) if args.bus else None)
 
     try:
         if args.cmd == "join":
@@ -862,9 +1066,13 @@ def main(argv=None) -> int:
                         refs[k] = v
             return w.propose(args.frm, args.subject, args.text,
                              to=[t.strip() for t in args.to.split(",") if t.strip()] or ["*"],
-                             refs=refs)
+                             refs=refs, require=args.require)
         if args.cmd == "respond":
             return w.respond(args.thread, args.frm, args.type, args.text, args.reply_to)
+        if args.cmd == "close-thread":
+            return w.close_thread(args.thread, args.by)
+        if args.cmd == "task-blocked":
+            return w.task_blocked(args.task_id)
         if args.cmd == "decide":
             return w.decide(args.by, args.subject, args.outcome)
         if args.cmd == "archive":

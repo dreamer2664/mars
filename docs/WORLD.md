@@ -57,7 +57,8 @@ hot file (see §4). Every file carries `"schema": 1`.
 // threads/<id>.json   — th-...
 { "schema": 1, "id": "th-...", "subject": "", "type": "proposal|question|...",
   "from": "", "to": ["*"]|["<name>"], "refs": {"task":null,"video":null,"meeting":null},
-  "status": "open|resolved",
+  "required": [],            // M-BUS: [{"agent":"scipio","types":["evidence"]}, ...] — the gate
+  "status": "open|resolved", "resolved_by": null, "resolved_ts": null,
   "messages": [ {"ts":"...Z","bus_id":"<ntfy/bus id>","from":"","type":"","text":"","reply_to":null} ] }
 
 // archive/<id>.json   — ar-...
@@ -146,7 +147,10 @@ world.py pc acquire --by <n> --purpose "..." [--ttl 30]
 world.py pc renew|release --by <n> --token <t>
 world.py pc status | queue | cancel --by <n> | sweep --by <n>
 world.py propose --from <n> --subject "..." [--refs task=...,video=...] [--to <n|*>]
+                     [--require agent:type|type,...]        # M-BUS: the gate (docs/COMMS.md)
 world.py respond --thread <id> --from <n> --type <t> --text "..." [--evidence <path|url>]
+world.py close-thread --thread <id> --by <n>            # refused while requirements are unmet
+world.py task-blocked <task-id>                         # exit 4 while a gating thread is open
 world.py decide --meeting <id> --by <n> --outcome "..."
 world.py video new --title "..." --channel ch-... --by <n> --evidence "thread th-... | path | url"
 world.py video advance <vid> --to <stage#|name> --by <n> --evidence "..."   # the 13-stage machine (§2 table)
@@ -158,10 +162,18 @@ world.py archive add --title "..." --by <n> [--tags a,b] [--deposit <storagecode
 world.py status                                        # one screen: colony, PC, queue, open threads
 ```
 
-Every *significant* subcommand (propose/respond/decide) also posts the matching message on
-the real bus (chatcode `say`/`ping` with the typed prefix) and mirrors it into the thread
-file with the bus id — one action, two records, no drift. Ordinary chatter never touches
-`world/`.
+Every *significant* subcommand (propose/respond) posts the matching message on the real bus
+FIRST — `--bus <chatcode checkout>` runs `chatcode say` there, commits and pushes with the
+auth-injected `chatcode git` (CHATCODE_TOKEN in the environment, never on argv) — and only
+then mirrors it into the thread file carrying the bus id: one action, two records, no drift.
+Without `--bus` the message lands only in the thread (marked not-mirrored) and **will not
+satisfy any required response** — a local-only reply is a draft, not a record. Ordinary
+chatter never touches `world/`.
+
+**The gate (M-BUS)**: a thread opened with `--require scipio:evidence,ariadne:approval`
+refuses to close, refuses to let a referenced *task* complete (`task-blocked` exits 4), and
+refuses to let a referenced *video* advance — until each requirement is met by a response
+from that agent of that type **with a bus id**. The law of it is docs/COMMS.md.
 
 ## 4. The lock protocol (the part that must never lie)
 

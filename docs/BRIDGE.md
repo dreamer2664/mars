@@ -36,6 +36,11 @@ the Director logs into once**:
 # (Edge works identically with msedge.exe if that is the browser in use)
 ```
 
+> **Run box / shortcut users:** type it as ONE line — the `^` above is only for
+> a terminal. In a shortcut, put the chrome.exe path in *Target*'s front and
+> everything from `--user-data-dir` onward at the end of the same line.
+> *(Setup-honesty review, 2026-10-15, scipio — interface sections untouched.)*
+
 In that window, the Director logs into the Google account(s) that own the channels **once**.
 Sessions persist in that profile. The agents never see a password; the bridge never reads or
 exportes cookies; account switching between brand channels happens in the YouTube Studio UI

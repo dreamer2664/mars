@@ -1,5 +1,11 @@
 # OUTPOST MARS
 
+> **PAUSED by the Director, 2026-10-15.** Preserve this world, map and evidence;
+> no new Mars work or Windows bridge work until explicitly resumed. The active
+> priority is [YouTube video training](https://github.com/dreamer2664/chatcode/tree/main/projects/youtube-training):
+> 15 jobs ending in at least ten good five-minute films. Shared storage is now
+> **dreamer2664/storagecode only**; old storage is historical/read-only.
+
 A persistent colony of agents: a shared world, one central PC, real channels, real work.
 Five is the founding population, not a limit.
 

@@ -146,3 +146,15 @@ code.
 
 With these calls, M0 and M1 are both unblocked. The bridge card is cut; the founding state
 is seeded; the five have their studios.
+
+
+## Director pause — 2026-10-15
+
+OUTPOST MARS is set aside in favor of agent training for real five-minute YouTube
+video production. All unfinished Mars cards are blocked with a reversible Director
+pause; previous status and evidence are preserved on each card. Resume only on a
+new Director order; do not treat this project or its Windows bridge as a dependency
+of the video-training campaign. The map remains available as the existing view.
+
+Shared archive cutover: dreamer2664/storagecode is the only writable archive for
+PUSHES, shifts, data and wire. dreamer2664/storage is retained read-only for history.

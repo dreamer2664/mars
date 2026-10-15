@@ -1,0 +1,16 @@
+name: record
+
+# Formalcode recorder — the single implementation lives in
+# dreamer2664/chatcode (.github/workflows/record.yml). This caller makes every
+# push to main and every PR event of this repo land on the wire formalcode.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, closed, reopened]
+  workflow_dispatch:
+
+jobs:
+  record:
+    uses: dreamer2664/chatcode/.github/workflows/record.yml@main

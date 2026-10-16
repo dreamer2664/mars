@@ -44,27 +44,95 @@ class Fail(Exception):
     pass
 
 
+def _candidates() -> list[str]:
+    """Every layout `import uiautomation` could resolve to, for each sys.path entry.
+
+    This matters and was wrong once already. The package installs as `site-packages/uiautomation/`
+    containing `__init__.py` + `uiautomation.py`, and `site-packages` is the sys.path entry — so the file
+    is at `<root>/uiautomation/uiautomation.py`. The wheel some builds use instead has a top-level
+    `uiautomation.py`. Checking only one of these, as the first version did, makes auto-detection fail on a
+    *correctly installed* package; and because a stray `--wheel` was always being passed by hand here, the
+    bug never surfaced until it was aimed at the one machine that had no wheel lying around.
+    """
+    out = []
+    for root in [r for r in sys.path if r]:
+        # `import uiautomation` resolves to ONE of these; a package directory wins over a flat module
+        # only because the file inside it does. Listing `__init__.py` as a candidate was the bug: it is a
+        # 4-line re-export, so the scan had to sniff for "class Control" to notice, and a flat-module
+        # install (no package directory at all) had no candidate whatsoever -> "cannot find" on a box
+        # where the library was installed and importable.
+        # NOTE the trailing commas: os.path.join(root, "x.py") would pass the STRING as the second
+        # argument and iterate its characters — "flat/u/i/a/u/t/o/m/a/t/i/o/n/./p/y" — which is exactly
+        # what the flat-module case did before a test caught it. A path component must be a 1-tuple.
+        for rel in ((PKG, "uiautomation.py"), (PKG + ".py",), (PKG, "uiautomation", "uiautomation.py"),
+                    ):
+            cand = os.path.join(root, *rel)
+            if cand not in out:
+                out.append(cand)
+    return out
+
+
 def find_source(wheel: str | None) -> tuple[str, str]:
-    """Return (source_text, where_from). Prefers an explicit wheel, then an installed package, then any
-    wheel lying around — so this runs on Linux, where the package cannot even be imported."""
+    """Return (source_text, where_from): the installed library if there is one, else an explicit wheel,
+    else a wheel in the current directory. `--wheel` is an override for CI, never a requirement — the
+    normal invocation is bare `python tools\api_check.py` on the machine that has the library installed.
+    No /tmp scavenging: a fallback that only exists on the developer's Linux box is how a broken
+    auto-detect hides until a Windows user hits it."""
     if wheel:
         if not os.path.exists(wheel):
             raise Fail(f"--wheel {wheel} does not exist")
         z = zipfile.ZipFile(wheel)
-        if MOD_IN_WHEEL not in z.namelist():
-            raise Fail(f"{wheel} has no {MOD_IN_WHEEL} (members: {z.namelist()[:6]})")
-        return z.read(MOD_IN_WHEEL).decode("utf-8", "replace"), os.path.basename(wheel)
-    for root in sys.path:
-        cand = os.path.join(root, PKG, "uiautomation.py")
-        if os.path.exists(cand):
-            with io.open(cand, encoding="utf-8", errors="replace") as f:
-                return f.read(), cand
-    hits = [os.path.join(d, f) for d in ("/tmp", "/tmp/uia_dl", os.getcwd())
-            for f in sorted(os.listdir(d) if os.path.isdir(d) else [])
-            if f.startswith(PKG) and f.endswith(".whl")]
-    if hits:
-        return find_source(hits[0])
-    raise Fail("no uiautomation source found: pass --wheel <file.whl> or `pip download uiautomation`")
+        if MOD_IN_WHEEL in z.namelist():
+            return z.read(MOD_IN_WHEEL).decode("utf-8", "replace"), os.path.basename(wheel)
+        # wheels come in both shapes; take whichever member holds the code
+        for name in z.namelist():
+            if name.endswith("uiautomation.py") and "__init__" not in name:
+                return z.read(name).decode("utf-8", "replace"), f"{os.path.basename(wheel)}:{name}"
+        raise Fail(f"{wheel} has no uiautomation source (members: {z.namelist()[:6]})")
+    for cand in _candidates():
+        if not os.path.isfile(cand):
+            continue
+        with io.open(cand, encoding="utf-8", errors="replace") as f:
+            src = f.read()
+        if "class Control" in src:              # the real module; anything else is a re-export stub
+            return src, cand
+    here = [f for f in sorted(os.listdir(".")) if f.startswith(PKG) and f.endswith(".whl")]
+    if here:
+        return find_source(os.path.join(".", here[0]))
+    raise Fail("cannot find the uiautomation source. On the PC it is installed, so this means the "
+               "interpreter running this script is not the one with the package — check `python -c "
+               "\"import uiautomation,sys;print(uiautomation.__file__)\"`, or pass "
+               "--wheel <file.whl> from `pip download uiautomation --no-deps -d .`")
+
+
+def version_of(src_path: str) -> str:
+    """The library's own version, from wherever it actually lives. `uiautomation` has NO `__version__`:
+    a package install keeps `VERSION` in a sibling `version.py`, while a flat single-module install keeps it
+    at the top of the module. Printing the word 'unknown' for the wrong attribute lookup is how a blank got
+    quoted as if it were a finding about the Director's install, so every branch here says what it tried."""
+    dbl, sgl = chr(34), chr(39)
+    quote = "[" + dbl + sgl + "]"
+    here = src_path if src_path.endswith(".py") else os.path.join(src_path, "uiautomation.py")
+    base = os.path.dirname(here)
+    vfile = os.path.join(base, "version.py")
+    try:                                    # package layout: uiautomation/version.py
+        txt = open(vfile, encoding="utf-8", errors="replace").read()
+        m = re.search(r"VERSION\s*=\s*" + quote + "([^" + dbl + sgl + "]+)" + quote, txt)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    try:                                    # flat layout: VERSION at the top of the single module
+        txt = open(here, encoding="utf-8", errors="replace").read()
+        m = re.search(r"^VERSION\s*=\s*" + quote + "(.+?)" + quote, txt, re.M)
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    m = re.search(r"uiautomation[-_]([0-9][0-9.]*)", os.path.basename(src_path))
+    if m:                                   # wheel name: uiautomation-2.0.29-py3-none-any.whl
+        return m.group(1).rstrip(".")
+    return "unknown (no version.py beside the module, no VERSION in it, none in the path)"
 
 
 def index(src: str) -> dict:
@@ -230,7 +298,8 @@ def main(argv=None) -> int:
                              "text": "[verify_shapes]"})
         checked += 1
 
-    res = {"ok": not problems, "source": where, "target": os.path.basename(a.target),
+    res = {"ok": not problems, "source": where, "uia_version": version_of(where),
+           "target": os.path.basename(a.target),
            "guarded_optional": len(optional),
            "checked": checked, "control_members": len(idx["classes"].get("Control", {})),
            "module_callables": len(idx["callables"]),
@@ -238,7 +307,8 @@ def main(argv=None) -> int:
     if a.json:
         print(json.dumps(res, indent=1))
     else:
-        print(f"api_check: {where} — Control has {res['control_members']} members, module "
+        print(f"api_check: uiautomation {res['uia_version']} at {where} — Control has "
+              f"{res['control_members']} members, module "
               f"{res['module_callables']} callables; {checked} names used by {res['target']} verified")
         for o in optional:
             print(f"  ok {o['line']}: {o['host']}.{o['name']} — {o['why']} ({o['found']})")

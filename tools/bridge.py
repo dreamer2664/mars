@@ -576,7 +576,13 @@ class Core:
             import winuia
             auto = getattr(getattr(self.backend, "t", None), "auto", None)
             if auto is not None:
-                ver = getattr(auto, "__version__", "unknown")
+                ver = getattr(auto, "__version__", None)
+                if ver is None:                      # uiautomation has no __version__: it keeps VERSION in
+                    try:                             # uiautomation/version.py. Asking for the wrong attribute
+                        ver = auto.version.VERSION    # and calling the answer "unknown" is how a blank got
+                    except Exception:                 # quoted as if it were a finding about his install.
+                        ver = None
+                ver = ver or "unknown (no __version__, no version.py)"
                 missing = winuia.UiaTransport.probe(auto)
             else:
                 ver = f"n/a ({self.backend.name} backend)"

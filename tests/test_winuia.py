@@ -117,6 +117,17 @@ class IdsAndResolution(unittest.TestCase):
         self.assertIn("no longer exists", str(e.exception))
         self.assertEqual(t.actions, [])
 
+    def test_the_id_shape_is_the_same_on_every_backend(self):
+        """`windows` lists `id-2`; `tree` lists `id-2-0`; `--window id-2`, `--window 2` and a title
+        substring all resolve. The Director's run showed `first=1` on Windows against `id-1` on the sim —
+        two spellings of the same thing is how an agent starts guessing."""
+        be, t = backend()
+        wins = be.observe("windows", {})
+        self.assertEqual([w["id"] for w in wins["windows"]], ["id-0", "id-1"])
+        for ref in ("id-0", "0"):
+            self.assertEqual(be.observe("tree", {"window": ref})["tree"][0]["id"], "id-0-0", ref)
+        self.assertEqual(be.observe("tree", {"window": "studio"})["window"], "0")
+
     def test_window_can_be_named_by_title_substring(self):
         be, t = backend()
         self.assertEqual(be.observe("tree", {"window": "studio"})["window"], "0")
@@ -236,6 +247,138 @@ class BackendSelection(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.getvalue())["refused"], "backend-unreachable")
 
+
+class _CtlClass:
+    """The *class-level* shape of uiautomation 2.0.29's `Control`: the reads are `property` objects and
+    the actions are methods. probe() inspects the class, so a fake that only has instance attributes
+    would (correctly) be reported as missing them. Kept separate from _Ctl below, which is the instance
+    shape the backend walks."""
+    Name = property(lambda self: "")
+    ControlTypeName = property(lambda self: "ButtonControl")
+    IsEnabled = property(lambda self: True)
+    IsOffscreen = property(lambda self: False)
+    BoundingRectangle = property(lambda self: None)
+    NativeWindowHandle = property(lambda self: 0)
+    ProcessId = property(lambda self: 0)
+    def GetChildren(self): return []
+    def Click(self, **kw): pass
+    def SendKeys(self, *a, **k): pass
+    def Close(self): pass
+    def GetInvokePattern(self): return None
+    def GetValuePattern(self): return None
+    def ToBitmap(self, *a, **k): return None
+    def SetFocus(self): return True
+
+
+class _Ctl:
+    """Shaped like uiautomation 2.0.29's Control: Name/ControlTypeName/IsEnabled/IsOffscreen are
+    PROPERTIES (plain attributes here), Click/SendKeys/ToBitmap/Get*Pattern are METHODS. Getting this
+    backwards is what failed on the Director's PC, so the fake is deliberately strict about it."""
+    def __init__(self, name, kids=None, enabled=True, offscreen=False, bitmap=None):
+        self.Name, self.ControlTypeName = name, "ButtonControl"
+        self.IsEnabled, self.IsOffscreen = enabled, offscreen
+        self.ProcessId, self.NativeWindowHandle = 4100, 1
+        self.BoundingRectangle = type("R", (), {"left": 0, "top": 0, "right": 40, "bottom": 10})()
+        self._kids = kids or []
+        self._bitmap = bitmap
+        self.clicked = 0
+
+    def GetChildren(self):
+        return self._kids
+    def Click(self, **kw):
+        self.clicked += 1
+    def SendKeys(self, *a, **k):
+        pass
+    def SetFocus(self):
+        return True
+    def Close(self):
+        pass
+    def GetInvokePattern(self):
+        return None
+    def GetValuePattern(self):
+        return None
+    def ToBitmap(self, *a, **k):
+        return self._bitmap
+
+
+class _Auto:
+    """Enough of the module surface that probe() and the walks can be exercised off-Windows."""
+    def __init__(self, root):
+        self.Control = _CtlClass
+        self.GetScreenSize = lambda: (1920, 1080)
+        self.GetForegroundControl = lambda: root
+        self.SendKeys = lambda *a, **k: None
+        self._root = root
+        self.GetRootControl = lambda: self._root
+
+
+class LibraryShape(unittest.TestCase):
+    def test_probe_reports_only_what_is_actually_missing(self):
+        root = _Ctl("desktop", [_Ctl("Studio")])
+        self.assertEqual(winuia.UiaTransport.probe(_Auto(root)), [], _Auto(root))
+        broken = _Auto(root)
+        del broken.GetScreenSize
+        del broken.Control.ToBitmap
+        missing = winuia.UiaTransport.probe(broken)
+        self.assertIn("GetScreenSize", missing)
+        self.assertIn("Control.ToBitmap", missing)
+
+    def test_probe_catches_the_exact_bug_the_director_hit(self):
+        """On Carlo's PC: `TypeError: 'bool' object is not callable` — a property called as a method.
+        A library that renames an API, or exposes a member in the wrong *kind* (a method where we need a
+        property), is caught here, before any control is touched. What it cannot catch is our own calling
+        convention against a library that is internally consistent — the real 2.0.29 failure was exactly
+        that, and it is why `elements()` still reads properties as attributes and never as calls."""
+        # a *complete* stand-in for the library's Control class, in the correct shapes: _Ctl already
+        # declares the properties as attributes and the actions as methods, so a clean probe means
+        # "everything we call exists in the form we call it", not merely "Name is there".
+        Props = _CtlClass
+        class MethodsAsProps(_CtlClass):     # a renamed/retired method: we call it, it is a bare value
+            GetChildren = 1
+        auto = _Auto(_Ctl("desktop"))
+        auto2 = type("A", (), dict(auto.__dict__))
+        for k in ("GetRootControl", "GetForegroundControl", "SendKeys", "GetScreenSize"):
+            setattr(auto2, k, getattr(auto, k))
+        auto2.Control = MethodsAsProps
+        bad = winuia.UiaTransport.probe(auto2)
+        self.assertIn("Control.GetChildren", bad, bad)
+        auto3 = type("A", (), dict(auto.__dict__))
+        for k in ("GetRootControl", "GetForegroundControl", "SendKeys", "GetScreenSize"):
+            setattr(auto3, k, getattr(auto, k))
+        auto3.Control = Props
+        self.assertEqual(winuia.UiaTransport.probe(auto3), [], winuia.UiaTransport.probe(auto3))
+
+    def test_construction_refuses_a_library_it_cannot_trust(self):
+        auto = _Auto(_Ctl("desktop"))
+        del auto.GetScreenSize
+        with self.assertRaises(winuia.TransportUnavailable) as e:
+            winuia.UiaTransport(auto)
+        self.assertIn("GetScreenSize", str(e.exception))
+        self.assertIn("will not guess", str(e.exception))
+
+    def test_walk_is_depth_limited_and_shared(self):
+        deep = _Ctl("a", [_Ctl("b", [_Ctl("c")])])
+        be = winuia.WindowsBackend(transport=type("T", (), {
+            "windows": lambda self: {"0": {"title": "a", "pid": 1, "minimized": False}},
+            "_win": lambda self, k: deep, "elements": lambda self, k, d: [],
+        })())
+        rows = winuia._walk(deep, None)
+        self.assertEqual([c.Name for c in rows], ["b", "c"], "breadth-first, top window excluded")
+
+    def test_downscale_is_optional_not_assumed(self):
+        """max_width=0 must be a no-op, and a missing Pillow must not turn a capture into a failure:
+        the frame is still real, just not resized. Silently *claiming* a resize would be the lie."""
+        png = b"\x89PNG\r\n\x1a\n" + bytes(range(64))
+        self.assertEqual(winuia._downscale(png, 0), png)
+        self.assertIsInstance(winuia._downscale(png, 960), (bytes, bytearray))
+
+    def test_blank_detector_sees_structure_not_mood(self):
+        black = b"\x00" * 4096
+        noisy = bytes(i % 251 for i in range(4096))
+        self.assertTrue(winuia.is_mostly_blank(black, FakeTransport(blank=True)))
+        self.assertFalse(winuia.is_mostly_blank(black, FakeTransport(blank=False)),
+                         "the transport is the authority; the helper must not freelance")
+        self.assertGreater(len(set(noisy[::7])), 2, "a real frame has structure")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

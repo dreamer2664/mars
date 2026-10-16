@@ -237,7 +237,21 @@ pip install uiautomation
 python tools\bridge.py --backend windows selftest               # the desktop answer: PASS or FAIL
 ```
 
-`python tools\bridge.py --backend windows --token <t> --generation <n> act capture --window 0 --save-to lens.png`
+`python tools\bridge.py --backend windows --token <t> --generation <n> act capture --window id-0 --save-to lens.png`
+(window ids read `id-<n>` on both backends; `--window 0`, `--window id-0` and `--window Roblox` all resolve.)
+
+**Field result, 2026-10-16 19:06Z — the first real Windows run (Carlo's desktop).** `--backend windows
+selftest` came back `FAIL 9/12`, and it was right to: `observe:tree` raised `TypeError: 'bool' object is
+not callable` and `observe:capture` raised `'WindowControl' object has no attribute 'CaptureToRect'`. Three
+API names in `UiaTransport` had been written against memory instead of the package — `IsEnabled`/`IsOffscreen`
+are *properties* (no parentheses), the capture call is `ToBitmap()` → `Bitmap.ToBytes("png")` (no PIL
+needed), and `WaitUntilReady` does not exist. All three corrected against the source of the published wheel
+(read from PyPI, not assumed), and `window enumeration` now reports 4 top-level windows where the sim shows 3,
+which is the sim being a toy and not a bug. `probe()` checks the module and method shapes at construction and
+`verify_shapes()` checks the property shapes against a live control, so a renamed or re-kinded API is a
+sentence about the library instead of a red check with a stack trace. **This is E5 in the only honest sense
+available here: an observed live process on the owner's machine, and it found what 82 sandbox tests could
+not.** The re-run on the PC is PCB-01 proper.
 is then one frame of your own desktop, through the lease, with a digest in the chain.
 
 Three properties of this section are load-bearing and are enforced in code, not in prose:

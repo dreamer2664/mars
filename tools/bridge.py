@@ -142,16 +142,19 @@ class SimBackend:
 
     def __init__(self):
         self.state = {
+            # keys are bare indices and ids are `id-<n>` / `id-<n>-<m>`: byte-for-byte the shape the
+            # windows backend reports, so an agent never learns "window 1" on one box and "id-1" on
+            # another. A convention that differs between sim and real is how rehearsal stops being rehearsal.
             "windows": {
-                "id-1": {"title": "Roblox Studio — FloodlinePlace9", "pid": 4100, "minimized": False},
-                "id-2": {"title": "Code — world.py", "pid": 4200, "minimized": False},
-                "id-3": {"title": "Save As", "pid": 4200, "minimized": True},
+                "1": {"title": "Roblox Studio — FloodlinePlace9", "pid": 4100, "minimized": False},
+                "2": {"title": "Code — world.py", "pid": 4200, "minimized": False},
+                "3": {"title": "Save As", "pid": 4200, "minimized": True},
             },
             "elements": {
-                "id-1-1": {"window": "id-1", "name": "Play", "control": "Button", "enabled": True},
-                "id-1-2": {"window": "id-1", "name": "Output Log", "control": "Document", "enabled": True},
-                "id-2-1": {"window": "id-2", "name": "editor", "control": "Edit", "enabled": True},
-                "id-3-1": {"window": "id-3", "name": "Cancel", "control": "Button", "enabled": True},
+                "1-0": {"window": "1", "name": "Play", "control": "Button", "enabled": True},
+                "1-1": {"window": "1", "name": "Output Log", "control": "Document", "enabled": True},
+                "2-0": {"window": "2", "name": "editor", "control": "Edit", "enabled": True},
+                "3-0": {"window": "3", "name": "Cancel", "control": "Button", "enabled": True},
             },
             "values": {}, "log": [], "free_mb": 9_000, "idle_closed": 0, "temp_cleared_mb": 0,
             "downloads": 3, "playing": False, "tidy_count": 0,
@@ -164,9 +167,9 @@ class SimBackend:
     def observe(self, kind, args):
         if kind == "windows":
             flt = (args.get("filter") or "").lower()
-            wins = [w for t, w in self.state["windows"].items()
+            wins = [dict(w, id=f"id-{t}") for t, w in self.state["windows"].items()
                     if not flt or flt in t.lower() or flt in w["title"].lower()]
-            return {"kind": "windows", "count": len(wins), "digest": digest(wins)}
+            return {"kind": "windows", "count": len(wins), "windows": wins, "digest": digest(wins)}
         if kind == "tree":
             win = args.get("window")
             els = {k: v for k, v in self.state["elements"].items() if not win or v["window"] == win}
@@ -187,7 +190,7 @@ class SimBackend:
     def run(self, action, args):
         s = self.state
         if action == "invoke":
-            el = s["elements"].get(args["element"])
+            el = s["elements"].get(_elkey(args["element"]))
             if not el or not el["enabled"]:
                 raise Refused("element-unavailable", f"{args['element']} is absent or disabled — look first")
             if el["name"] == "Play":
@@ -195,10 +198,10 @@ class SimBackend:
             s["log"].append(f"invoke {el['name']}")
             return {"invoked": el["name"], "playing": s["playing"]}
         if action == "set_text":
-            el = s["elements"].get(args["element"])
+            el = s["elements"].get(_elkey(args["element"]))
             if not el:
                 raise Refused("element-unavailable", args["element"])
-            s["values"][args["element"]] = args["text"]
+            s["values"][_elkey(args["element"])] = args["text"]
             s["log"].append(f"set_text {el['name']}={len(args['text'])}c")
             return {"set": el["name"], "chars": len(args["text"])}
         if action == "key_chord":
@@ -238,6 +241,13 @@ class SimBackend:
             s["log"].append(f"{action} {args}")
             return {"permitted": action, "note": "sim: no real side effect"}
         raise Refused("backend-refused", f"sim has no handler for {action}")
+
+
+def _elkey(ref) -> str:
+    """`id-1-0` and `1-0` are the same element to the sim. Accepting both costs four lines and prevents
+    the most demoralising failure an agent can have: a correct id that resolves to nothing."""
+    r = str(ref or "")
+    return r[3:] if r.startswith("id-") else r
 
 
 def _tiny_png(payload: bytes) -> bytes:
@@ -542,6 +552,17 @@ class Core:
         real = self.backend.name == "windows"
         # informational, never a failure: on the sim this line is the *explanation* of the verdict, and
         # a check that can only go red in a mode where red is expected trains people to ignore red.
+        if real:
+            ver = getattr(getattr(self.backend, "t", None), "auto", None)
+            ver = getattr(ver, "__version__", "unknown") if ver else "unknown"
+            missing = []
+            try:
+                import winuia
+                missing = winuia.UiaTransport.probe(self.backend.t.auto) if ver != "unknown" else []
+            except Exception as e:
+                missing = [f"probe failed: {e}"]
+            chk("library-shape", not missing,
+                f"uiautomation {ver}" + ("" if not missing else " — missing: " + ", ".join(missing)))
         chk("fence-live", (not real) or self.fence.mode != "off",
             f"fence={self.fence.mode}" + ("" if self.fence.mode != "off" or not real else
             " — a real desktop driven without the world's lease check is a remote control, not a bridge"))

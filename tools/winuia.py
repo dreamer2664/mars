@@ -55,8 +55,13 @@ class WindowsBackend:
 
     def _win(self, key: str):
         wins = self.t.windows()
-        if key in wins:
-            return key, wins[key]
+        key = str(key or "")
+        bare = key[3:] if key.startswith("id-") else key        # accept "id-2" and "2" alike
+        if bare in wins:
+            return bare, wins[bare]
+        for k, w in wins.items():
+            if key.lower() in str(w.get("title", "")).lower() or f"id-{k}" == key:
+                return k, w
         for k, w in wins.items():
             if key.lower() in str(w.get("title", "")).lower():
                 return k, w
@@ -65,7 +70,10 @@ class WindowsBackend:
     def observe(self, kind, args):
         if kind == "windows":
             flt = (args.get("filter") or "").lower()
-            items = [{"id": wid, **w} for wid, w in self.t.windows().items()
+            # `id-<n>`, exactly as the sim reports it and exactly what `tree` hands back for elements,
+            # so one string is valid in every command on every backend. An id that changes shape between
+            # rehearsal and the real machine is a rehearsal that teaches the wrong syntax.
+            items = [{"id": f"id-{wid}", **w} for wid, w in self.t.windows().items()
                      if not flt or flt in str(w.get("title", "")).lower()]
             return {"kind": "windows", "count": len(items), "windows": items, "digest": digest(items)}
         if kind == "tree":
@@ -76,7 +84,7 @@ class WindowsBackend:
                     raise TransportUnavailable(f"no window matches {args.get('window')!r} — look again with `windows`")
             depth = int(args.get("depth") or 3)
             els = self.t.elements(win_key, depth)
-            rows = [{"id": f"id-{win_key}-{i}", "name": e.get("name", ""), "control": e.get("control", ""),
+            rows = [{"id": f"id-{win_key}-{i}",     # win_key is bare here, so ids read `id-2-0` "name": e.get("name", ""), "control": e.get("control", ""),
                      "enabled": bool(e.get("enabled")), "offscreen": bool(e.get("offscreen")),
                      "rect": e.get("rect")} for i, e in enumerate(els)]
             out = {"kind": "tree", "window": win_key, "elements": len(rows), "tree": rows,
@@ -123,7 +131,7 @@ class WindowsBackend:
         parts = str(ref).split("-")
         if len(parts) < 3:
             raise TransportUnavailable(f"{ref!r} names a window, not an element: expected id-<window>-<n>")
-        win_key = "-".join(parts[1:-1])
+        win_key = "-".join(parts[1:-1])           # "id-2-0" -> window "2", element 0
         try:
             idx = int(parts[-1])
         except ValueError:
@@ -196,77 +204,174 @@ def build_transport():
 
 
 class UiaTransport:
-    """Thin adapter over `uiautomation`. Deliberately dumb: the policy is in bridge.py.
+    """Adapter over `uiautomation` 2.0.29. Every name below was read out of that package's own source,
+    not guessed — the first version of this class invented three of them (`IsEnabled()` as a method,
+    `CaptureToRect`, `WaitUntilReady`) and the Director's PC found all three in one run.
 
-    Not exercised by this repo's tests (it needs a desktop); every method's *decision* is covered
-    through the fake transport in tests/test_winuia.py, so the logic is proven even where the API is not.
+    Rules this class obeys, because they are the difference between a field failure and a silent one:
+      * a member we need but cannot find raises `TransportUnavailable` at construction (`probe()`),
+        so a library upgrade is reported at once instead of mid-click;
+      * capture returns PNG bytes straight from the bitmap (`ToBytes("png")`), no PIL dependency;
+      * the window list and the element list come from ONE walk, so the id an agent reads is the
+        object the click resolves to.
     """
+    #: what we require from the installed library. Kind matters as much as presence: `IsEnabled` is a
+    #: PROPERTY in uiautomation and `Click` is a METHOD, and writing `IsEnabled()` is a TypeError on a
+    #: live desktop that no Linux test can see coming. probe() therefore checks the *shape* too —
+    #: it is one loop over attributes the library already exposes, and it turns "observe:tree: TypeError:
+    #: 'bool' object is not callable" into a one-line diagnosis before any action is attempted.
+    REQUIRED = ("GetRootControl", "GetForegroundControl", "SendKeys", "GetScreenSize")
+    REQUIRED_CONTROL = ("Name", "ControlTypeName", "IsEnabled", "IsOffscreen", "BoundingRectangle",
+                        "NativeWindowHandle", "ProcessId", "GetChildren", "Click", "SendKeys", "Close",
+                        "GetInvokePattern", "GetValuePattern", "ToBitmap", "SetFocus")
+    #: properties, checked on a live control by verify_shapes() rather than on the class
+
     def __init__(self, auto):
         self.auto = auto
+        missing = self.probe(auto)
+        if missing:
+            raise TransportUnavailable(
+                "uiautomation is missing what this backend needs: " + ", ".join(missing)
+                + " — the bridge will not guess its way past a renamed API")
 
+    @staticmethod
+    def probe(auto):
+        """What is provable from the *class*: the module functions and Control methods we call exist and
+        are callable. Properties are deliberately NOT checked here — in uiautomation `Name`/`IsEnabled`
+        are `property` objects on the class and plain values on an instance, so a class-level shape test
+        would fail on a perfectly good library. That half belongs to verify_shapes(), run against a real
+        control the first time we walk one."""
+        bad = []
+        for name in UiaTransport.REQUIRED:
+            m = getattr(auto, name, None)
+            if m is None:
+                bad.append(name)
+            elif not callable(m):
+                bad.append(f"{name} (present but not callable)")
+        ctl = getattr(auto, "Control", None)
+        if ctl is not None:
+            for name in UiaTransport.REQUIRED_CONTROL:
+                if callable(getattr(ctl, name, None)):
+                    continue
+                if isinstance(getattr(ctl, name, None), property):
+                    continue                       # a property is exactly what we expect at class level
+                bad.append(f"Control.{name}")       # missing, or neither method nor property
+        return bad
+
+    @staticmethod
+    def verify_shapes(control):
+        """The other half, against a *live* control: the properties we read must not be callables. This
+        is the check that would have turned 'TypeError: \'bool\' object is not callable' into a sentence
+        about the library, before a single action was attempted."""
+        bad = []
+        for name in ("Name", "ControlTypeName", "IsEnabled", "IsOffscreen", "BoundingRectangle",
+                     "ProcessId", "NativeWindowHandle"):
+            v = getattr(type(control), name, None)
+            if v is not None and callable(v) and not isinstance(v, property):
+                bad.append(f"Control.{name} is a method in this library; this backend reads it as a value")
+        return bad
+
+    # ------------------------------------------------------------ enumeration ---
     def session_status(self):
         try:
             import ctypes
             is_admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
         except Exception:
             is_admin = False
-        return {"interactive": True, "elevated_held": is_admin, "session": "console", "free_mb": None}
+        free_mb = None
+        try:
+            class EX(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_uint32), ("ullAvailPhys", ctypes.c_uint64),
+                            ("_pad", ctypes.c_uint64 * 6)]
+            e = EX(); e.dwLength = ctypes.sizeof(EX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(e)):
+                free_mb = e.ullAvailPhys // (1024 * 1024)
+        except Exception:
+            pass
+        return {"interactive": True, "elevated_held": is_admin, "session": "console", "free_mb": free_mb}
+
+    def _top_level(self):
+        out = []
+        for c in self.auto.GetRootControl().GetChildren():
+            try:
+                if not c.Name:                       # unnamed panes are shell furniture, not windows
+                    continue
+                if c.IsOffscreen and not c.IsEnabled:
+                    continue
+            except Exception:
+                continue
+            out.append(c)
+        return out
 
     def windows(self):
         out = {}
-        for i, w in enumerate(self.auto.GetRootControl().GetChildren()):
-            if w.ControlTypeName != "WindowControl":
-                continue
-            out[str(i)] = {"title": w.Name, "pid": w.ProcessId, "minimized": bool(w.IsMinimize())}
+        for i, w in enumerate(self._top_level()):
+            r = w.BoundingRectangle
+            out[str(i)] = {"title": w.Name, "pid": w.ProcessId,
+                           "minimized": bool(r.right - r.left <= 0 or r.bottom - r.top <= 0),
+                           "rect": [r.left, r.top, r.right, r.bottom]}
         return out
 
     def _win(self, key):
-        for i, w in enumerate(self.auto.GetRootControl().GetChildren()):
-            if str(i) == str(key):
-                return w
+        for k, w in self.windows().items():
+            if k == str(key):
+                for c in self._top_level():
+                    if c.Name == w["title"]:
+                        return c
         return None
 
     def _flat(self, win_key):
-        """THE one enumeration. `elements()` (what an agent reads) and `_ctl()` (what gets clicked)
-        both come from here, so the id in a tree is the same object at click time. Two walks — one
-        filtered for reading, one raw for acting — is how an id silently points at the wrong button."""
+        """THE one enumeration: what `elements()` shows and what `_ctl()` clicks are the same list."""
         w = self._win(win_key)
         if w is None:
             return []
-        flat, stack = [], [w]
-        while stack:
-            c = stack.pop(0)
-            for k in c.GetChildren():
-                flat.append(k)
-                stack.append(k)
-        return flat
+        return _walk(w, self.auto)
 
     def elements(self, win_key, depth):
-        flat = self._flat(win_key)
         rows = []
-        for c in flat[:400]:
-            r = c.BoundingRectangle
+        walked = _walk(self._win(win_key), self.auto)
+        if walked:
+            bad = UiaTransport.verify_shapes(walked[0])
+            if bad:
+                raise TransportUnavailable("the installed uiautomation does not match this backend: "
+                                            + "; ".join(bad))
+        for c in walked[:400]:
+            try:
+                r = c.BoundingRectangle
+                rect = [r.left, r.top, r.right, r.bottom]
+            except Exception:
+                rect = None
             rows.append({"name": c.Name, "control": c.ControlTypeName.replace("Control", ""),
-                         "enabled": bool(c.IsEnabled()), "offscreen": bool(c.IsOffscreen()),
-                         "rect": [r.left, r.top, r.right, r.bottom]})
+                         "enabled": bool(c.IsEnabled), "offscreen": bool(c.IsOffscreen), "rect": rect})
         return rows
 
-    def invoke(self, win_key, idx, button="left"):
-        c = self._ctl(win_key, idx)
-        if button == "left":
-            pat = c.GetInvokePattern()
-            if pat is not None:
-                return pat.Invoke()
-        c.Click(simulateMove=False, button=button)
+    # ----------------------------------------------------------------- capture ---
+    def capture(self, win_key, region=None, max_width=960):
+        target = "screen" if win_key in (None, "screen") else self._win(win_key)
+        if target is None:
+            raise TransportUnavailable(f"window {win_key} is gone before the capture")
+        bmp = target.ToBitmap()
+        if bmp is None:
+            raise TransportUnavailable("ToBitmap returned nothing — this window will not give up pixels "
+                                       "(composited or protected); say so rather than inferring a dead app")
+        try:
+            data = bmp.ToBytes("png")
+            size = (bmp.Width, bmp.Height)
+        finally:
+            try:
+                bmp.__exit__(None, None, None)
+            except Exception:
+                pass
+        if not data:
+            raise TransportUnavailable("png encode returned no bytes")
+        return _downscale(bytes(data), max_width)
 
-    def set_text(self, win_key, idx, text):
-        c = self._ctl(win_key, idx)
-        pat = c.GetValuePattern()
-        if pat is not None:
-            return pat.SetValue(text)
-        c.SendKeys("{Ctrl}a", waitTime=0.05)
-        c.SendKeys(text.replace("{", "{{").replace("}", "}}"), waitTime=0.05)
+    def is_blank(self, img) -> bool:
+        """Cheap and honest: a real desktop frame has structure; a black PrintWindow failure is uniform."""
+        body = img[-4096:]
+        return len(set(body[::7])) <= 2 if body else True
 
+    # ------------------------------------------------------------------ action ---
     def _ctl(self, win_key, idx):
         flat = self._flat(win_key)
         if not flat:
@@ -275,21 +380,31 @@ class UiaTransport:
             raise TransportUnavailable(f"element index {idx} out of range: the UI moved, look again")
         return flat[idx]
 
+    def invoke(self, win_key, idx, button="left"):
+        c = self._ctl(win_key, idx)
+        if button == "left":
+            pat = c.GetInvokePattern()
+            if pat is not None:
+                pat.Invoke()
+                return
+        c.Click(simulateMove=False, button=button)
+
+    def set_text(self, win_key, idx, text):
+        c = self._ctl(win_key, idx)
+        pat = c.GetValuePattern()
+        safe = text.replace("{", "{{").replace("}", "}}")
+        if pat is not None:
+            try:
+                pat.SetValue(text)
+                return
+            except Exception:
+                pass                        # read-only ValuePattern is common; fall through to keys
+        c.SetFocus()
+        c.SendKeys("{Ctrl}a", waitTime=0.05)
+        c.SendKeys(safe, waitTime=0.05)
+
     def send_keys(self, keys):
         self.auto.SendKeys(keys, waitTime=0.05)
-
-    def capture(self, win_key, region=None, max_width=960):
-        if region:
-            return self.auto.SafeBlockShot(*region)
-        w = self._win(win_key)
-        return w.CaptureToRect(scale=1.0) if w else None
-
-    def is_blank(self, img) -> bool:
-        try:
-            data = bytes(img)
-        except Exception:
-            return False
-        return len(set(data[-256:])) <= 2 if data else True
 
     def wait_for(self, cond, timeout_s):
         import time
@@ -305,10 +420,10 @@ class UiaTransport:
                 for wid in self.windows():
                     if any(want in (e.get("name") or "").lower() for e in self.elements(wid, 6)):
                         return True, "text appeared"
-            elif cond == "idle":
-                return True, "no-op: idle cannot be observed through UIA; use text:/window: instead"
+            elif cond.startswith("title:"):
+                return False, "use window:<substr> — title: is the same thing, spelled once"
             time.sleep(0.5)
-        return False, "timeout"
+        return False, f"timeout after {timeout_s:.0f}s"
 
     def snapshot(self):
         return {"windows": self.windows()}
@@ -337,6 +452,13 @@ class UiaTransport:
                         c.Close()
                         closed.append(w["title"])
             return {"closed": closed}
+        if kind == "memory":
+            try:
+                import ctypes
+                ctypes.windll.psapi.SetProcessWorkingSetSize(-1, 0xFFFFFFFF, 0xFFFFFFFF)
+                return {"tidied": "memory", "note": "working-set trim only; it is a hint, not a promise"}
+            except Exception as e:
+                raise TransportUnavailable(f"memory tidy unavailable: {e}")
         raise TransportUnavailable(f"{kind} has no Windows implementation yet — say so rather than "
                                    "approximating it with something else")
 
@@ -344,3 +466,43 @@ class UiaTransport:
         raise TransportUnavailable(f"{action} is not implemented on Windows yet. The bridge allowed it "
                                    "(it is scope-bound, not allowlist-bound), so this is a build gap, "
                                    "not a refusal — put it on the card")
+
+
+def _walk(top, auto):
+    """Breadth-first, depth-bounded, and *the only* walk — _flat and elements share it."""
+    if top is None:
+        return []
+    rows, stack = [], [top]
+    while stack:
+        c = stack.pop(0)
+        try:
+            kids = c.GetChildren()
+        except Exception:
+            kids = []
+        for k in kids:
+            rows.append(k)
+            stack.append(k)
+        if len(rows) >= 400:
+            break
+    return rows
+
+
+def _downscale(png: bytes, max_width: int) -> bytes:
+    """Optional polish: shrink only if Pillow is present, and never pretend a resize happened."""
+    if not max_width:
+        return png
+    try:
+        import io
+        from PIL import Image
+    except Exception:
+        return png
+    try:
+        im = Image.open(io.BytesIO(png))
+        if im.width <= max_width:
+            return png
+        h = int(im.height * (max_width / im.width))
+        out = io.BytesIO()
+        im.convert("RGB").resize((max_width, h)).save(out, "PNG", optimize=True)
+        return out.getvalue()
+    except Exception:
+        return png

@@ -5,15 +5,3 @@ __pycache__/
 # local scratch
 *.log
 .tmp/
-
-# The bridge's local runtime state: receipts, pending approvals, the PAUSE flag.
-# Never under world/ (that is the colony's record): it is one machine's log.
-pc/*
-
-# ...EXCEPT the two things that are not local state — they ARE the channel between an agent and this
-# machine, and the PC reaches them by pulling:
-#   pc/queue/<id>.json      commands waiting to run
-#   pc/results/<id>.done.json  what happened to each of them
-# `git check-ignore -v` on a queued file is the two-second way to re-verify this after any edit.
-!pc/queue/
-!pc/results/

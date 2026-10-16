@@ -1,10 +1,41 @@
 # CONNECT — how an agent on another computer drives this PC
 
-You asked for: an agent wakes up, gets the project's MD, and can watch/click/type on your PC. This file is
-the honest version of how that works, because the naive version cannot: the agent lives in a chat session on
-a server, it has no socket to your machine, it cannot be dialled, and it stops existing between messages.
+You asked for: an agent wakes up, gets the project's MD, and can watch/click/type on your PC.
 
-So nothing connects *to* your PC. Your PC reaches out to the one place both sides already trust — the repo —
+**"You can't connect to my PC" was the wrong way for me to say it, so here is the right one.** There is no
+live wire between my session and your machine, and there cannot be: I run inside a turn, I have no socket, no
+port, nothing listening, and I stop existing between your messages. What that does *not* mean is that I cannot
+drive it. Driving happens through the repo, and it works exactly the same whether the gap between us is ten
+seconds or ten hours:
+
+  1. I write a command file and push it (`pc/queue/c-….json`) — I can do this from here, on your behalf,
+     because I already have write access to `mars`.
+  2. Your PC's `pc_agent.py watch` pulls it within one interval, executes it *through* the bridge, and pushes
+     the result back.
+  3. I read the result on my next turn — including screenshots, which I can open and look at.
+
+So the connection is not missing; it is asynchronous. What you get: commands execute on your machine at the
+interval pace, without you touching anything, and every one leaves a receipt. What you do not get: me watching
+a live video feed and reacting in real time inside a single step. One look-decide-click cycle costs one of my
+turns, or — if I pre-queue a plan — runs at the interval pace with me not involved until it finishes.
+
+### The lease token is not a secret, and pretending otherwise was misleading
+
+`world.py pc acquire` writes the token **into `world/lock.json` and pushes it** — and this repo is public. So
+while a lease is held, the token is world-readable. That means requiring it inside each queued command would
+be ceremony that protects nothing while implying it protects something. The runner now injects the live token
+at execution time from its own pulled lock, and a command that does carry one is still held to it.
+
+What actually protects the machine: **the lease** (one holder at a time, and the generation is re-checked at
+execution), **the bridge's four refusals**, **the deadman expiry** on every command, and **your stop switch**.
+If you ever want the token to be a real secret, that is a change to `world.py`'s lock schema, which every
+agent in the fleet reads — a fleet decision, not one I would make on my own.
+
+---
+
+### The mechanics
+
+Nothing connects *to* your PC. Your PC reaches out to the one place both sides already trust — the repo —
 and the agent's commands and the machine's answers travel as commits:
 
 ```
@@ -55,6 +86,17 @@ python tools\pc_agent.py status
 ```
 
 ## 2. Connect (60 minutes of grip, renewable)
+
+You can also queue commands yourself, from the PC, to try the channel before any agent uses it:
+
+```powershell
+python tools\pc_agent.py queue --verb windows --task PCB-01
+python tools\pc_agent.py queue --verb capture --task PCB-01 --arg window=id-1
+python tools\pc_agent.py once          # or leave `watch` running
+```
+
+`queue` refuses to write a command when no lease is live — a command queued against nobody sits in the repo
+looking like work and would be inherited by whoever acquires next.
 
 ```powershell
 python tools\pc_agent.py connect --by fabius --purpose "PCB-02 first real task" --ttl 60
@@ -135,6 +177,7 @@ deliberately a separate command, because a resume is a decision and not a retry.
 | `deadman` | the command's `expires_ts` passed | a click that fires after the task moved on is worse than one that never fired |
 | `no-scope` | a write with no `task` | the bridge's rule, not re-implemented here (a second copy would drift) |
 | `not-allowlisted` | a verb the bridge does not define | the verb list is read from the bridge's own table |
+| `bad-command` | a hostile or malformed id (`../escape`) | ids become filenames, so they are pattern-checked |
 | `paused` | you said stop | checked before each command, from anywhere |
 
 Everything the bridge already refuses stays refused — the four §7.1 refusals (elevated-action, credential

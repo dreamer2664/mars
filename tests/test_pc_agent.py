@@ -269,6 +269,68 @@ class DryRun(Sandbox):
         self.assertIsNone(r.lease_problem(cmd[0]), "the lease check is pure: it must answer in dry-run too")
 
 
+class Queueing(Sandbox):
+    """`queue` is how a command gets made without hand-writing JSON and a token. It must refuse to make one
+    that nobody can run — a command queued against no lease sits in the repo looking like work and gets
+    inherited by whoever acquires next."""
+
+    def test_a_queued_command_carries_no_token_and_the_runner_supplies_the_live_one(self):
+        self.lock(token="tok-live", generation=4)
+        cmd = self.runner(fence="static").enqueue("capture", {"window": "id-0"}, "PCB-02", push=False)
+        self.assertNotIn("token", cmd, "the token is published in world/lock.json anyway: keeping it out of "
+                                       "the command is honest, pretending it is a secret is not")
+        self.assertEqual(cmd["generation"], 4)
+        on_disk = json.loads((self.work / "pc" / "queue" / f"{cmd['id']}.json").read_text())
+        self.assertNotIn("token", on_disk)
+        # and the runner executes it by injecting the live token
+        out = self.runner(fence="static", backend="sim").once()
+        self.assertEqual(out["turn"], "executed")
+        self.assertEqual(out["record"]["status"], "done", out["record"])
+
+    def test_a_command_with_the_wrong_token_is_still_refused(self):
+        """Optional token must not mean 'no check': a command that names one is held to it."""
+        self.lock(token="tok-live", generation=4)
+        self.queue("c-lying", token="tok-other", generation=4)
+        rec = self.runner(fence="static").once()["record"]
+        self.assertEqual(rec["reason"], "wrong-token")
+
+    def test_queueing_without_a_lease_is_refused_before_it_is_written(self):
+        from bridge import Refused
+        r = self.runner(fence="static")
+        with self.assertRaises(Refused) as e:
+            r.enqueue("capture", {"window": "id-0"}, "PCB-02", push=False)
+        self.assertEqual(e.exception.reason, "no-lock")
+        self.assertFalse((self.work / "pc" / "queue").exists() and
+                         list((self.work / "pc" / "queue").glob("c-*")), "it wrote the file anyway")
+
+    def test_queueing_validates_the_verb_and_its_fields(self):
+        from bridge import Refused
+        self.lock()
+        r = self.runner(fence="static")
+        with self.assertRaises(Refused) as e:
+            r.enqueue("teleport", {}, "PCB-02", push=False)
+        self.assertEqual(e.exception.reason, "not-allowlisted")
+        with self.assertRaises(Refused) as e2:                 # a real verb, a missing required field
+            r.enqueue("set_text", {"element": "id-0-0"}, "PCB-02", push=False)
+        self.assertEqual(e2.exception.reason, "bad-args")
+        self.assertIn("text", str(e2.exception.hint))
+        with self.assertRaises(Refused) as e3:                 # a typo must not ride along to the OS
+            r.enqueue("capture", {"window": "id-0", "windwo": "id-1"}, "PCB-02", push=False)
+        self.assertEqual(e3.exception.reason, "bad-args")
+
+    def test_a_queued_command_survives_the_round_trip_through_git(self):
+        """The whole point of the channel: what the agent writes is what the PC pulls."""
+        self.lock(token="tok-live", generation=4)
+        cmd = self.runner(fence="static").enqueue("windows", {}, "PCB-01", push=False)
+        git("add", "-A", cwd=self.work); git("commit", "-q", "-m", "q", cwd=self.work); git("push", "-q", cwd=self.work)
+        other = self.tmp / "other"
+        git("clone", "-q", str(self.origin), str(other), cwd=self.tmp)
+        pulled = json.loads((other / "pc" / "queue" / f"{cmd['id']}.json").read_text())
+        self.assertEqual(pulled["verb"], "windows")
+        self.assertEqual(pulled["id"], cmd["id"])
+        self.assertNotIn("token", pulled)
+
+
 class AgainstTheRealWorld(Sandbox):
     """The check that would have caught the vocabulary bug: drive `world.py` itself, in a temp repo, and
     assert the runner accepts what the world actually produces.

@@ -83,8 +83,12 @@ def _verbs():
 TAG = re.compile(r"^[A-Za-z0-9._-]{1,40}$")
 
 
-def z() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def z(offset_min: int = 0) -> str:
+    """UTC stamp, optionally offset. Same shape as world.py's, so timestamps from the two tools compare as
+    strings without a parser — which matters because the comparisons happen in two languages' worth of
+    code paths (Python here, a human reading a diff there)."""
+    t = dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=offset_min)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_ts(ts: str):
@@ -134,7 +138,15 @@ class Runner:
         return load_json(self.repo / LOCK) or {}
 
     def lease_problem(self, cmd) -> str | None:
-        """None = may run. Else the reason, phrased so a human can act on it."""
+        """None = may run. Else the reason, phrased so a human can act on it.
+
+        Note what is deliberately NOT here: a check that the command carries a secret. `world/lock.json`
+        is *published* — `world.py pc acquire` writes the token into it and pushes it — so on a public
+        repo the token is world-readable for the duration of the hold, and requiring it in the command
+        would be ceremony that protects nothing while implying it protects something. What actually
+        protects the machine is the lease (one holder), the generation match below, the runner's own
+        refusals, and the human's stop. The runner injects the live token at execution time.
+        """
         lock = self.lease()
         # The world's vocabulary is free | held; an expired hold reports as "recovering", never as free
         # (world.py line ~213: "an expired hold is recovering, never silently free"). My first version
@@ -205,9 +217,19 @@ class Runner:
 
         # NB: Core creates its own log_dir. Do not add a second mkdir here "for safety" — one creator,
         # one place to be wrong, and a redundant line hides which component is actually responsible.
+        live = self.lease()
+        # ONE value, used for both. `Fence.static` (built by build_core) and the token handed to
+        # `Core.act()` are two different things: the first configures the check, the second is what the
+        # check compares. Injecting the live token into only one of them produced "an action needs
+        # --token and --generation from the PC grant" while the fence was correctly configured — a
+        # message that points at the caller, not at the half-wired change that caused it.
+        tok = cmd.get("token") or live.get("token")
         try:
             core = build_core(backend=self.backend, fence=self.fence, root=self.repo,
-                              token=cmd.get("token"), generation=cmd.get("generation"),
+                              # the live token, not the command's: see lease_problem(). A command that
+                              # explicitly carries one is still checked against the lock above.
+                              token=tok,
+                              generation=cmd.get("generation"),
                               lock_file=str(self.repo / LOCK) if self.fence == "static" else None,
                               log_dir=self.log_dir, ask=cmd.get("ask") or "important")
         except Refused as e:                       # e.g. no fence on a real desktop: a record, not a crash
@@ -215,7 +237,7 @@ class Runner:
         task = cmd.get("task") or None
         try:
             rec = core.act(verb, dict(cmd.get("args") or {}),
-                           token=cmd.get("token"), generation=cmd.get("generation"), task=task)
+                           token=tok, generation=cmd.get("generation"), task=task)
         except Refused as e:
             return self._rec(cmd, "refused", e.reason, e.hint or str(e))
         except Exception as e:                     # a traceback in a watched terminal teaches nobody anything
@@ -329,6 +351,44 @@ class Runner:
                 return 0
             time.sleep(interval)
 
+    # ---------- queueing ----------
+    def enqueue(self, verb, args, task, ask="none", expires_min=10, by="fabius", push=True) -> dict:
+        """Put one command in the queue. Refuses if no live lease is held, because a command queued against
+        nobody is a trap: it sits there looking like work, and the next person to hold the PC inherits it.
+        That is the same class of bug as a click firing after the task moved on."""
+        import secrets
+        from bridge import ACTIONS, Refused
+        if verb not in ACTIONS:
+            raise Refused("not-allowlisted", f"'{verb}' is not a bridge verb "
+                                             f"(known: {', '.join(sorted(ACTIONS))})")
+        spec = ACTIONS[verb]
+        req, opt = spec[2], spec[3]
+        missing = [k for k in req if not args.get(k)]
+        unknown = [k for k in args if k not in req and k not in opt]
+        if missing:
+            raise Refused("bad-args", f"{verb} needs {missing}")
+        if unknown:
+            raise Refused("bad-args", f"{verb} has no field(s) {unknown} — a typo must not ride along")
+        lock = self.lease()
+        probe = {"generation": lock.get("generation"), "token": None}
+        hard = self.lease_problem(probe)
+        if hard:
+            raise Refused(hard.split(":")[0], hard)
+        cid = f"c-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+        cmd = {"id": cid, "by": by, "task": task, "verb": verb, "args": args, "ask": ask,
+               "generation": lock.get("generation"), "created_ts": z(),
+               "expires_ts": z(expires_min)}
+        self.queue.mkdir(parents=True, exist_ok=True)
+        f = self.queue / f"{cid}.json"
+        f.write_text(json.dumps(cmd, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        if push and not self.dry_run:
+            run_git("add", QUEUE)
+            run_git("commit", "-q", "-m", f"queue {cid}: {verb} for {task}")
+            p = run_git("push")
+            if p.returncode != 0:
+                raise RuntimeError(f"queued locally but could not push: {p.stdout.strip()[:200]}")
+        return cmd
+
     # ---------- human-side controls ----------
     def stop(self, why="the human said stop") -> str:
         (self.repo / PAUSE_FLAG).parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +424,13 @@ def main(argv=None) -> int:
     sub.add_parser("peek", parents=[parent])
     p = sub.add_parser("watch", parents=[parent]); p.add_argument("--interval", type=int, default=10)
     p.add_argument("--max-turns", type=int, default=0); p.add_argument("--quiet", action="store_true")
+    q = sub.add_parser("queue", parents=[parent],
+                       help="put one command in the queue (validated, and only while a lease is live)")
+    q.add_argument("--verb", required=True)
+    q.add_argument("--task", required=True)
+    q.add_argument("--ask", default="none", choices=["none", "important", "all"])
+    q.add_argument("--expires-min", type=int, default=10)
+    q.add_argument("--arg", action="append", default=[], metavar="K=V")
     p = sub.add_parser("connect", parents=[parent]); p.add_argument("--by", required=True)
     p.add_argument("--purpose", required=True); p.add_argument("--ttl", type=int, default=60)
     p = sub.add_parser("stop", parents=[parent]); p.add_argument("--why", default="the human said stop")
@@ -393,6 +460,26 @@ def main(argv=None) -> int:
         print(f"pc_agent: watching {r.queue} every {a.interval}s — Ctrl-C to stop, `pc_agent.py stop` to "
               f"stop it from anywhere", flush=True)
         return r.watch(a.interval, a.max_turns, a.quiet)
+    if a.cmd == "queue":
+        args = {}
+        for pair in a.arg:
+            if "=" not in pair:
+                print(json.dumps({"ok": False, "refused": "bad-args",
+                                  "hint": f"--arg {pair!r} is not K=V"}))
+                return 1
+            k, v = pair.split("=", 1)
+            args[k] = int(v) if v.isdigit() else v
+        try:
+            cmd = r.enqueue(a.verb, args, a.task, ask=a.ask, expires_min=a.expires_min)
+        except Exception as e:
+            reason = getattr(e, "reason", "error")
+            print(json.dumps({"ok": False, "refused": reason, "hint": getattr(e, "hint", str(e))}))
+            return 1
+        print(json.dumps({"queued": cmd["id"], "verb": cmd["verb"], "task": cmd["task"],
+                          "expires_ts": cmd["expires_ts"], "generation": cmd["generation"],
+                          "note": "the token is not in this file: the runner injects the live one"},
+                         indent=2, sort_keys=True))
+        return 0
     if a.cmd == "connect":
         w = HERE / "world.py"
         p = subprocess.run([sys.executable, str(w), "pc", "acquire", "--by", a.by,

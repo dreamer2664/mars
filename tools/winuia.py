@@ -208,6 +208,10 @@ class UiaTransport:
     not guessed — the first version of this class invented three of them (`IsEnabled()` as a method,
     `CaptureToRect`, `WaitUntilReady`) and the Director's PC found all three in one run.
 
+    Every name below is checked by `python3 tools/api_check.py --wheel <uiautomation.whl>`, which reads the
+    library's own source and rejects any call this repo makes that the class cannot serve. Run it after
+    touching this file; it is the only honest way to test a Windows API from Linux.
+
     Rules this class obeys, because they are the difference between a field failure and a silent one:
       * a member we need but cannot find raises `TransportUnavailable` at construction (`probe()`),
         so a library upgrade is reported at once instead of mid-click;
@@ -221,9 +225,20 @@ class UiaTransport:
     #: it is one loop over attributes the library already exposes, and it turns "observe:tree: TypeError:
     #: 'bool' object is not callable" into a one-line diagnosis before any action is attempted.
     REQUIRED = ("GetRootControl", "GetForegroundControl", "SendKeys", "GetScreenSize")
+    #: What MUST exist on the base `Control` class, because every element we touch is one. Checked by
+    #: probe() at construction. `tools/api_check.py` asserts this list against the library's real source,
+    #: so a name cannot be added from memory again: the first version demanded `Close`, `GetInvokePattern`
+    #: and `GetValuePattern`, none of which are on `Control`, and the guard rejected a good install on the
+    #: Director's PC instead of finding the bug in my code.
     REQUIRED_CONTROL = ("Name", "ControlTypeName", "IsEnabled", "IsOffscreen", "BoundingRectangle",
-                        "NativeWindowHandle", "ProcessId", "GetChildren", "Click", "SendKeys", "Close",
-                        "GetInvokePattern", "GetValuePattern", "ToBitmap", "SetFocus")
+                        "NativeWindowHandle", "ProcessId", "GetChildren", "Click", "SendKeys",
+                        "ToBitmap", "SetFocus")
+    #: What we use *if the concrete control offers it*: `GetInvokePattern` on ButtonControl &c.,
+    #: `GetValuePattern` on EditControl &c., `Close` on WindowPatternControl. Not on the base class, so
+    #: demanding them there is wrong twice over — a false alarm on a working library, and still no alarm
+    #: when the specific element lacks the pattern. Call sites ask the object with hasattr().
+    OPTIONAL_CONTROL = ("GetInvokePattern", "GetValuePattern", "Close", "GetClickablePoint",
+                        "ShowWindow", "SetWindowText")
     #: properties, checked on a live control by verify_shapes() rather than on the class
 
     def __init__(self, auto):
@@ -231,8 +246,10 @@ class UiaTransport:
         missing = self.probe(auto)
         if missing:
             raise TransportUnavailable(
-                "uiautomation is missing what this backend needs: " + ", ".join(missing)
-                + " — the bridge will not guess its way past a renamed API")
+                "uiautomation does not match what this backend calls: " + ", ".join(missing)
+                + " — the bridge will not guess its way past a renamed API. Run "
+                  "`python tools\api_check.py` to see which side is wrong; a reinstall fixes a broken "
+                  "install but not a name we invented, and this list has been wrong before")
 
     @staticmethod
     def probe(auto):
@@ -381,9 +398,22 @@ class UiaTransport:
         return flat[idx]
 
     def invoke(self, win_key, idx, button="left"):
+        """Click `c`, preferring the Invoke pattern when this control offers one.
+
+        `GetInvokePattern` is NOT on uiautomation's base `Control`: it is defined on `ButtonControl`,
+        `HeaderItemControl`, `HyperlinkControl` and friends, i.e. only where the UIA tree classified the
+        element. Asking the concrete object is therefore the correct form; asking the *class* `Control` is
+        a lie — which is what my first `probe()` did, and it reported a perfectly good install as "missing
+        Control.GetInvokePattern". A pattern lookup can also raise if the element stopped supporting it
+        between the walk and the click, so this branch is best-effort and a plain `Click` is always the
+        fallback: never a failure invented by our own optimism.
+        """
         c = self._ctl(win_key, idx)
-        if button == "left":
-            pat = c.GetInvokePattern()
+        if button == "left" and hasattr(c, "GetInvokePattern"):
+            try:
+                pat = c.GetInvokePattern()
+            except Exception:
+                pat = None
             if pat is not None:
                 pat.Invoke()
                 return
@@ -391,11 +421,16 @@ class UiaTransport:
 
     def set_text(self, win_key, idx, text):
         c = self._ctl(win_key, idx)
-        pat = c.GetValuePattern()
         safe = text.replace("{", "{{").replace("}", "}}")
+        pat = None
+        if hasattr(c, "GetValuePattern"):   # on EditControl/ComboBoxControl/DocumentControl, not on Control
+            try:
+                pat = c.GetValuePattern()
+            except Exception:
+                pat = None
         if pat is not None:
             try:
-                pat.SetValue(text)
+                pat.SetValue(text)          # replaces the value outright: no select-all, no brace escaping
                 return
             except Exception:
                 pass                        # read-only ValuePattern is common; fall through to keys
@@ -446,11 +481,18 @@ class UiaTransport:
         if kind == "close-idle":
             closed = []
             for wid, w in self.windows().items():
-                if w.get("minimized"):
-                    c = self._win(wid)
-                    if c is not None:
-                        c.Close()
-                        closed.append(w["title"])
+                if not w.get("minimized"):
+                    continue
+                c = self._win(wid)
+                # `Close` arrives via WindowPatternControl; the base Control has none. A window the library
+                # typed otherwise is SKIPPED and reported as skipped — closing is optional tidying, and
+                # inventing a `Control.Close()` is how you kill a process instead of hiding a window.
+                if c is None or not hasattr(c, "Close"):
+                    closed.append({"title": w["title"], "closed": False,
+                                   "why": "no Close on this control type"})
+                    continue
+                c.Close()
+                closed.append({"title": w["title"], "closed": True})
             return {"closed": closed}
         if kind == "memory":
             try:

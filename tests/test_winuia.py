@@ -263,11 +263,13 @@ class _CtlClass:
     def GetChildren(self): return []
     def Click(self, **kw): pass
     def SendKeys(self, *a, **k): pass
-    def Close(self): pass
-    def GetInvokePattern(self): return None
-    def GetValuePattern(self): return None
     def ToBitmap(self, *a, **k): return None
     def SetFocus(self): return True
+    # NO Close / GetInvokePattern / GetValuePattern here, on purpose. uiautomation's base `Control` does not
+    # define them — they arrive on ButtonControl, EditControl, WindowPatternControl and friends. An earlier
+    # version of this fake carried them, which is why probe() came to believe the class must have them and
+    # then rejected the Director's working install. `tools/api_check.py` now proves this shape against the
+    # library's own source; if you are tempted to add one back, add it to _Ctl (the instance) instead.
 
 
 class _Ctl:
@@ -310,6 +312,101 @@ class _Auto:
         self.SendKeys = lambda *a, **k: None
         self._root = root
         self.GetRootControl = lambda: self._root
+
+
+def _lacking(cls, *names):
+    """A control *type* that does not offer a capability. The methods live on the class, so `del self.X` on
+    an instance does nothing — the attribute is still found on the type. This is exactly how a PaneControl
+    differs from a ButtonControl in the real library, and it is the case every call site must survive."""
+    ns = {n: _Missing(n) for n in names}
+    return type(cls.__name__ + "No" + "".join(n.title() for n in names), (cls,), ns)
+
+
+class _Missing:
+    """A descriptor that fails on LOOKUP, not on call: `hasattr(c, "X")` must be False, which is what a
+    control type that does not offer the capability really looks like. Returning a function that raises when
+    called would leave `hasattr` true and make the whole test vacuous."""
+    def __init__(self, name):
+        self.name = name
+
+    def __get__(self, obj, objtype=None):
+        raise AttributeError(self.name)
+
+
+class GuardedCapability(unittest.TestCase):
+    """A per-control capability must be ASKED FOR, never assumed, and its absence must degrade to the
+    generic action rather than to an exception. Verified against uiautomation 2.0.29's real source:
+    `GetInvokePattern` is on ButtonControl/HeaderItemControl/HyperlinkControl, `GetValuePattern` on
+    EditControl/ComboBoxControl/DocumentControl, `Close` on WindowPatternControl — none on the base
+    class. So the common case (a PaneControl, a TreeItem, an unnamed wrapper) must NOT crash."""
+
+    def test_probe_does_not_demand_per_control_capabilities_on_the_class(self):
+        root = _Ctl("desktop", [_Ctl("Studio")])
+        self.assertFalse(hasattr(_CtlClass, "GetInvokePattern"), _CtlClass.__doc__)
+        self.assertEqual(winuia.UiaTransport.probe(_Auto(root)), [], "probe rejected a good library")
+
+    @staticmethod
+    def _win_with(child):
+        """A top-level window holding one control. `invoke`/`set_text` address index 0 of the window's
+        CHILDREN — `_walk` deliberately holds the window itself back (see test_walk_is_depth_limited_and_shared),
+        so a fixture with no children would test the 'window is gone' path by accident and call it a pass."""
+        w = _Ctl("Studio", [child])
+        w.GetChildren = lambda: [child]
+        return w
+
+    def _tr(self, child):
+        return winuia.UiaTransport(_Auto(_Ctl("root", [self._win_with(child)])))
+
+    def test_invoke_falls_back_to_a_click_when_the_control_has_no_invoke_pattern(self):
+        c = _lacking(_Ctl, "GetInvokePattern")("pane")
+        self.assertFalse(hasattr(c, "GetInvokePattern"), "the fake must actually lack it")
+        self._tr(c).invoke("0", 0)      # must not raise:: this is the common case, not the edge
+        self.assertEqual(c.clicked, 1, "no pattern and no click: nothing happened, yet we claimed success")
+
+    def test_invoke_uses_the_pattern_when_offered(self):
+        c = _Ctl("Play"); hits = []
+        c.GetInvokePattern = lambda: type("P", (), {"Invoke": lambda self: hits.append(1)})()
+        self._tr(c).invoke("0", 0)
+        self.assertEqual(hits, [1])
+        self.assertEqual(c.clicked, 0, "an invokable button should not be cursor-clicked")
+
+    def test_a_pattern_that_raises_between_walk_and_click_becomes_a_click_not_a_crash(self):
+        c = _Ctl("Play")
+        def boom():
+            raise RuntimeError("UIA_E_ELEMENTNOTAVAILABLE")
+        c.GetInvokePattern = boom
+        self._tr(c).invoke("0", 0)
+        self.assertEqual(c.clicked, 1, "the UI moved; the honest response is a click or an error, not silence")
+
+    def test_set_text_types_when_the_control_offers_no_value_pattern(self):
+        c = _lacking(_Ctl, "GetValuePattern")("chat box")
+        typed = []
+        c.SendKeys = lambda *a, **k: typed.append(a[0])
+        self._tr(c).set_text("0", 0, "build a {ladder}")
+        self.assertEqual(len(typed), 2, typed)              # select-all, then the text
+        self.assertEqual(typed[-1], "build a {{ladder}}", "braces are the library's key syntax: they must be escaped")
+
+    def test_set_text_prefers_the_value_pattern_when_offered(self):
+        c = _Ctl("chat box"); setv = []
+        c.GetValuePattern = lambda: type("P", (), {"SetValue": lambda self, t: setv.append(t)})()
+        typed = []
+        c.SendKeys = lambda *a, **k: typed.append(a[0])
+        self._tr(c).set_text("0", 0, "build a ladder")
+        self.assertEqual(setv, ["build a ladder"])
+        self.assertEqual(typed, [], "SetValue replaces the value; typing over it after is a double write")
+
+    def test_tidy_reports_windows_it_could_not_close_instead_of_faking_it(self):
+        zero = lambda: type("R", (), {"left": 0, "top": 0, "right": 0, "bottom": 0})()   # empty rect = minimized
+        ghost = _lacking(_Ctl, "Close")("ghost"); ghost.BoundingRectangle = zero()
+        real = _Ctl("notepad"); real.BoundingRectangle = zero()
+        tr = winuia.UiaTransport(_Auto(_Ctl("root", [ghost, real])))
+        out = tr.tidy("close-idle")
+        rows = out["closed"]
+        self.assertEqual(len(rows), 2, rows)
+        self.assertTrue(all(isinstance(r, dict) for r in rows), rows)
+        by = {r["title"]: r for r in rows}
+        self.assertFalse(by["ghost"]["closed"], "a control type without Close must be reported as skipped")
+        self.assertTrue(by["notepad"]["closed"], "a window that could be closed was not closed")
 
 
 class LibraryShape(unittest.TestCase):

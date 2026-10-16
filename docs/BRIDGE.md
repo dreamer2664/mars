@@ -242,6 +242,17 @@ python tools\bridge.py --backend windows selftest               # the desktop an
 `python tools\bridge.py --backend windows --token <t> --generation <n> act capture --window id-0 --save-to lens.png`
 (window ids read `id-<n>` on both backends; `--window 0`, `--window id-0` and `--window Roblox` all resolve.)
 
+**§8.1 The API-name trap, and the tool that closes it.** Three rounds of this commission were the same bug
+in three costumes: a name written from memory instead of from the source. `IsEnabled()`/`CaptureToRect`/
+`WaitUntilReady` (round 1, caught on the Director's PC as a `TypeError`), then `Control.Close`/
+`Control.GetInvokePattern`/`Control.GetValuePattern` (round 3, caught by `library-shape` — and those were in
+the *guard*, so the guard rejected a working install). `tools/api_check.py` ends it: it reads the shipped
+`uiautomation.py` out of an installed package or a bare `.whl` and rejects any name this repo reaches for
+that the object cannot serve, including the property-vs-method kind (calling a property is round 1; reading a
+method as a value is its mirror image, and worse, because a bound method is truthy forever). Guarded use
+(`hasattr(c, "X")`) is accepted and reported as `ok`, because a per-control capability is genuinely optional.
+Run it after touching `winuia.py`; it needs no Windows, which is the whole point.
+
 **Every answer names its own source.** `status`/`selftest` print `checkout` and every receipt carries `at` —
 the short SHA of the code that answered. This was added because a second field run produced output *identical*
 to the first: not a failed fix, a `git fetch` that had failed, and nothing on the page could distinguish the

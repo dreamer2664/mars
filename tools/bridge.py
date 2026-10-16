@@ -710,10 +710,28 @@ def _age_min(iso):
 
 
 # -------------------------------------------------------------------- CLI ---
+#: A refusal the human cannot act on is a bug report they cannot file. These are one command, not advice:
+#: the 19:06Z and 19:12Z runs both ended with a machine saying *no* and a person having to decide what to
+#: do with that. "next" is the shortest path to either fixing it or sending me something I can diagnose.
+NEXT = {
+    "backend-unreachable": "run `python tools\\api_check.py` (no Windows needed) to see which name the "
+                           "bridge is asking the library for; if it says MISMATCH the bug is ours, paste "
+                           "the whole line. `pip install --force-reinstall uiautomation` fixes a broken "
+                           "install, NOT a name we invented — do not spend your evening on that",
+    "selftest-fail": "do not run a task on this box; paste the first failing check's `detail` verbatim",
+    "fence-unreachable": "the referee is down by design: writes stop when the lease cannot be checked. "
+                         "Start `python tools\\world.py serve`, or pass --fence static if you accept no cross-agent check",
+    "no-scope": "pass --task <id>: an unscoped write is refused because nothing could later tell whether "
+                "it belonged to this project",
+}
+
+
 def _refuse(reason: str, hint: str = "", **extra) -> int:
     """One place a refusal is formatted, so a caller (agent, script, phone bridge) never has to read
     two streams to learn whether the bridge said no. Exit code 1 is the same answer in mechanical form."""
-    print(json.dumps(dict({"ok": False, "refused": reason, "hint": hint}, **extra),
+    out = {"ok": False, "refused": reason, "hint": hint}
+    nxt = NEXT.get(reason) or extra.pop("next", None)
+    print(json.dumps(dict(out, **{"next": nxt or "paste this line to the manager"}, **extra),
                       sort_keys=True, ensure_ascii=False, default=str))
     return 1
 

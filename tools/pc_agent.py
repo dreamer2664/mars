@@ -136,8 +136,14 @@ class Runner:
     def lease_problem(self, cmd) -> str | None:
         """None = may run. Else the reason, phrased so a human can act on it."""
         lock = self.lease()
-        if not lock or lock.get("state") != "active":
-            return "no-lock: nobody holds the PC (world.py pc acquire --by <agent> --purpose <why>)"
+        # The world's vocabulary is free | held; an expired hold reports as "recovering", never as free
+        # (world.py line ~213: "an expired hold is recovering, never silently free"). My first version
+        # tested for "active", a word this state machine has never used anywhere — so the runner refused
+        # *every legitimate command*, and only a rehearsal with the real world.py could show it. A check
+        # that has never once been seen to pass is not a check.
+        if not lock or lock.get("state") not in ("held", "active"):
+            return ("no-lock: nobody holds the PC (" + str(lock.get("state") or "no lock file")
+                    + ") — world.py pc acquire --by <agent> --purpose <why>")
         exp = parse_ts(lock.get("expires_ts") or "")
         if exp and exp < dt.datetime.now(dt.timezone.utc):
             return (f"lease-expired: {lock.get('holder')}'s lease ended at {lock['expires_ts']}; "
@@ -344,18 +350,28 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="read-only: never git, never touch the desktop")
     ap.add_argument("--backend", default="windows", choices=["windows", "sim", "null"])
     ap.add_argument("--fence", default="world", choices=["world", "static", "off"])
+    parent = argparse.ArgumentParser(add_help=False)
+    for flags in (("--repo", {"default": str(REPO)}),
+                  ("--log-dir", {"default": None}),
+                  ("--dry-run", {"action": "store_true"}),
+                  ("--backend", {"default": "windows", "choices": ["windows", "sim", "null"]}),
+                  ("--fence", {"default": "world", "choices": ["world", "static", "off"]})):
+        parent.add_argument(*flags[0:1], **flags[1])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("status")
-    sub.add_parser("once")
-    sub.add_parser("peek")
-    p = sub.add_parser("watch"); p.add_argument("--interval", type=int, default=10)
+    sub.add_parser("status", parents=[parent])
+    sub.add_parser("once", parents=[parent])
+    sub.add_parser("peek", parents=[parent])
+    p = sub.add_parser("watch", parents=[parent]); p.add_argument("--interval", type=int, default=10)
     p.add_argument("--max-turns", type=int, default=0); p.add_argument("--quiet", action="store_true")
-    p = sub.add_parser("connect"); p.add_argument("--by", required=True)
+    p = sub.add_parser("connect", parents=[parent]); p.add_argument("--by", required=True)
     p.add_argument("--purpose", required=True); p.add_argument("--ttl", type=int, default=60)
-    p = sub.add_parser("stop"); p.add_argument("--why", default="the human said stop")
-    sub.add_parser("resume")
+    p = sub.add_parser("stop", parents=[parent]); p.add_argument("--why", default="the human said stop")
+    sub.add_parser("resume", parents=[parent])
 
+    # argparse only accepts a global flag BEFORE the subcommand; nobody types it that way. Sharing the
+    # parent parser means `pc_agent.py once --backend sim` and `pc_agent.py --backend sim once` both work,
+    # which matters when the command is being typed on someone else's keyboard from a runbook.
     a = ap.parse_args(argv)
     r = Runner(repo=Path(a.repo), log_dir=a.log_dir, dry_run=a.dry_run, backend=a.backend, fence=a.fence)
 

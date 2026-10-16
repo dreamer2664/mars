@@ -172,8 +172,18 @@ class SimBackend:
             return {"kind": "windows", "count": len(wins), "windows": wins, "digest": digest(wins)}
         if kind == "tree":
             win = args.get("window")
-            els = {k: v for k, v in self.state["elements"].items() if not win or v["window"] == win}
-            return {"kind": "tree", "window": win, "elements": len(els), "digest": digest(els)}
+            # `window` arrives as an id ("id-1"); the element table keys its owner as "1". Comparing them
+            # directly matched nothing, so the sim answered **every** tree request with 0 elements — the
+            # shape of the answer was right and the content was silently empty. Nothing caught it because
+            # the sim's own self-test asserts a digest came back, not that the tree answered the question.
+            # A caller would have looked at a live application, been told it has no controls, and started
+            # debugging the application. Normalise through the same helper the actions use.
+            want = (_elkey(win).split("-")[0] if win else "")   # "id-1" -> "1-", and the window part is "1"
+            els = {k: v for k, v in self.state["elements"].items() if not want or v["window"] == want}
+            return {"kind": "tree", "window": win, "elements": len(els), "digest": digest(els),
+                    # the ids are the point: an agent clicks by element id, so a count with no ids forces a
+                    # second call for every click. Both backends answer with the same list shape.
+                    "ids": sorted(f"id-{k}" for k in els)}
         if kind == "capture":
             win = args.get("window", "screen")
             img = _tiny_png(f"{win}|{digest(self.state)}".encode())

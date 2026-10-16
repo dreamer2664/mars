@@ -60,7 +60,11 @@ class Sandbox(unittest.TestCase):
         git("push", "-q", "-u", "origin", "HEAD", cwd=self.work)
 
     # ---------- helpers ----------
-    def lock(self, holder="fabius", generation=3, token="tok-abc", expires_min=30, state="active"):
+    def lock(self, holder="fabius", generation=3, token="tok-abc", expires_min=30, state="held"):
+        # "held" is the world's word (world.py: free | held | recovering), and it must be the DEFAULT here.
+        # This fixture originally said "active" — the same invented word the runner tested for — so 17 tests
+        # passed against a state the real lock never takes, and every real command would have been refused.
+        # A fixture that agrees with the code instead of with the world is a mirror, not a test.
         (self.work / "world" / "lock.json").write_text(json.dumps({
             "state": state, "holder": holder, "generation": generation, "token": token,
             "expires_ts": z(expires_min), "purpose": "PCB-02", "history": [],
@@ -106,6 +110,15 @@ class Refusals(Sandbox):
         self.assertEqual(rec["status"], "refused")
         self.assertEqual(rec["reason"], "no-lock")
         self.assertIn("acquire", rec["detail"])
+
+    def test_a_free_lock_is_no_lock(self):
+        """world.py reports a released lease as `free` with holder=None. If this ever stops being refused,
+        a released PC could still be driven by whatever was sitting in the queue."""
+        self.lock(state="free", holder=None)
+        self.queue("c-free")
+        rec = self.runner().once()["record"]
+        self.assertEqual(rec["reason"], "no-lock")
+        self.assertIn("free", rec["detail"])
 
     def test_stale_generation_is_refused_and_names_both_sides(self):
         self.lock(generation=7)
@@ -254,6 +267,52 @@ class DryRun(Sandbox):
         cmd = r.pending()
         self.assertEqual(len(cmd), 1, "peek must still be able to name the waiting command")
         self.assertIsNone(r.lease_problem(cmd[0]), "the lease check is pure: it must answer in dry-run too")
+
+
+class AgainstTheRealWorld(Sandbox):
+    """The check that would have caught the vocabulary bug: drive `world.py` itself, in a temp repo, and
+    assert the runner accepts what the world actually produces.
+
+    `Sandbox.lock()` writes a fixture. A fixture is written by the same hand as the code that reads it, so
+    when both used the word "active" — a state `world.py` has never heard of — 17 tests passed and every
+    real command would have been refused. This class exists so that at least one test cannot agree with me.
+    """
+
+    def _world(self, *args):
+        return subprocess.run([sys.executable, str(self.work / "tools" / "world.py"), *args],
+                              cwd=str(self.work), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def test_a_lease_from_the_real_world_is_one_the_runner_accepts(self):
+        p = self._world("pc", "acquire", "--by", "fabius", "--purpose", "against the real world", "--ttl", "30")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("GRANTED", p.stdout)
+        lock = json.loads((self.work / "world" / "lock.json").read_text())
+        token, gen = lock["token"], lock["generation"]
+        self.assertTrue(token and gen, f"the world granted no grip: {lock}")
+
+        self.queue("c-real", token=token, generation=gen)
+        r = self.runner(fence="static")            # static-with-live-lock: no served referee needed in CI
+        cmd = r.pending()[0]
+        self.assertIsNone(r.lease_problem(cmd),
+                         "the runner refused a lease that world.py had just granted — the states disagree")
+
+        # and the fence the bridge itself uses must agree, in the exact form it invokes it
+        chk = self._world("--no-push", "pc", "check-token", "--token", token, "--generation", str(gen))
+        self.assertEqual(chk.returncode, 0, chk.stdout)
+        self.assertIn("TOKEN-OK", chk.stdout)
+
+    def test_the_runners_idea_of_a_live_lease_matches_the_worlds_after_a_release(self):
+        p = self._world("pc", "acquire", "--by", "fabius", "--purpose", "release path", "--ttl", "30")
+        lock = json.loads((self.work / "world" / "lock.json").read_text())
+        self.assertEqual(lock["state"], "held", "world.py changed its vocabulary: update the runner, not this test")
+        rel = self._world("pc", "release", "--by", "fabius", "--token", lock["token"])
+        self.assertEqual(rel.returncode, 0, rel.stdout)
+        after = json.loads((self.work / "world" / "lock.json").read_text())
+        self.assertEqual(after["state"], "free")
+        self.queue("c-after", token=lock["token"], generation=lock["generation"])
+        r = self.runner(fence="static")
+        self.assertEqual(r.lease_problem(r.pending()[0]).split(":")[0], "no-lock",
+                         "a released lease must refuse, naming the state it actually found")
 
 
 class VerbsComeFromTheBridge(unittest.TestCase):

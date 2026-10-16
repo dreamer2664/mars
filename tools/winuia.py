@@ -88,6 +88,11 @@ class WindowsBackend:
                      "enabled": bool(e.get("enabled")), "offscreen": bool(e.get("offscreen")),
                      "rect": e.get("rect")} for i, e in enumerate(els)]
             out = {"kind": "tree", "window": win_key, "elements": len(rows), "tree": rows,
+                   # Both backends answer with `ids`, the exact strings a click accepts. An agent that has
+                   # to derive `id-<win>-<i>` from a nested tree gets it wrong once, clicks nothing, and
+                   # reports success — the least visible failure in this whole system. The ids are computed
+                   # here, from the same single enumeration the rows come from, so they cannot disagree.
+                   "ids": [r["id"] for r in rows],
                    "digest": digest(rows)}
             if not rows and win is not None and not win.get("minimized"):
                 # An empty tree from a *visible* window is the UIPI signature (Medium session, elevated

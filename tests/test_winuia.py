@@ -110,6 +110,27 @@ class IdsAndResolution(unittest.TestCase):
         self.assertEqual(t.actions[-1], ("invoke", "0", 0, "left"))
         self.assertEqual(out["invoked"], "Play")
 
+    def test_tree_publishes_the_ids_a_click_would_accept(self):
+        """The cross-backend contract. `tree` now answers with `ids` — the exact strings `invoke` accepts.
+        Before this, the sim returned a count with no ids and winuia returned rows a caller had to turn into
+        `id-<win>-<i>` by hand: one wrong derivation, one click on nothing, one report of success. Both
+        backends must answer the same shape, and every published id must resolve."""
+        be, t = backend()
+        out = be.observe("tree", {"window": "id-0"})
+        self.assertEqual(out["ids"], [r["id"] for r in out["tree"]])
+        self.assertEqual(len(out["ids"]), out["elements"])
+        self.assertTrue(out["ids"], "a fixture with no ids proves nothing")
+        # Every published id must RESOLVE. It must not necessarily click: this fixture contains a
+        # deliberately disabled control, and demanding that it click would mean demanding the bridge lie
+        # about a disabled element. The honest assertion is that a published id is never "no such element"
+        # — it resolves to something real, and whether it may be acted on is a separate, visible decision.
+        for eid in out["ids"]:
+            try:
+                be.run("invoke", {"element": eid})
+            except winuia.TransportUnavailable as e:
+                self.assertNotIn("no longer exists", str(e), f"tree published {eid}, which does not resolve")
+                self.assertIn("disabled", str(e), f"{eid} failed for an unexpected reason: {e}")
+
     def test_stale_index_is_refused_and_touches_nothing(self):
         be, t = backend()
         with self.assertRaises(winuia.TransportUnavailable) as e:

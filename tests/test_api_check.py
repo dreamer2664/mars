@@ -71,9 +71,15 @@ def _build_site(members: dict[str, str], parent: str, kind: str = "package") -> 
     return site
 
 
-def _run(args: list[str], cwd: str, pythonpath: str = "") -> tuple[int, str]:
+def _run(args: list[str], cwd: str, pythonpath: str = "", isolated: bool = False) -> tuple[int, str]:
+    """Run the checker in a subprocess. `isolated=True` adds -S (do not process site-packages) so the run
+    sees ONLY the given PYTHONPATH — needed by the "no library installed" test, which otherwise passes for
+    the wrong reason on a machine that has the library, and FAILS for the wrong reason on one that does.
+    That is not hypothetical: this test suite is run both on CI (no library) and on the PC (library
+    installed), and only one of those was holding when it was written."""
     env = dict(os.environ, PYTHONPATH=pythonpath or "")
-    p = subprocess.run([sys.executable, CHECKER, *args], cwd=cwd, env=env,
+    py = [sys.executable, "-S"] if isolated else [sys.executable]
+    p = subprocess.run([*py, CHECKER, *args], cwd=cwd, env=env,
                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     return p.returncode, p.stdout
 
@@ -111,7 +117,8 @@ class Layouts(unittest.TestCase):
         self.assertNotIn("/u/i/a/", out, "path components must be tuples, not bare strings")
 
     def test_missing_library_refuses_with_actionable_words(self):
-        rc, out = _run(["--target", WINUIA], self.tmp, os.path.join(self.tmp, "nothing-here"))
+        rc, out = _run(["--target", WINUIA], self.tmp, os.path.join(self.tmp, "nothing-here"),
+                       isolated=True)
         self.assertEqual(rc, 2, out)
         for want in ("cannot find the uiautomation source", "import uiautomation", "--wheel"):
             self.assertIn(want, out, out)

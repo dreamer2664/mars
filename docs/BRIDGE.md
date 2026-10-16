@@ -91,3 +91,119 @@ act, with the Director watching.
 
 *If the browser or bridge is off, nothing happens — the lock expires, the queue moves on,
 and the failure is on the record. Nothing is ever assumed.*
+
+---
+
+## 7. M1 amendment (2026-10-16, `fabius`) — the bridge becomes the general desktop executor
+
+*The Director resumed this project and widened the brief: the agent may drive the whole desktop —
+editors, engines, email, any website — bounded by **the task's scope**, not by an app allowlist.
+§1–§6 above are unchanged and still binding: **one executor, fencing on token+generation, fail-closed,
+one receipt per action, the bridge never writes the world, screenshots stay local.** What follows is
+additive; where it conflicts with §3's M1 allowlist, this section wins and §3 is kept as history.*
+
+### 7.1 The two laws that stay in code, not in the prompt
+
+The repo's own reasoning applies (`tests/test_world_lock.py`, `chatcode`'s `test_no_touch.py`):
+*a rule that lives only in an agent's memory is a rule with N chances to fail.* So the bridge keeps
+exactly **three permanent refusals** and refuses **by name**, before any backend call:
+
+| id | refuses | why it is code, not guidance |
+|---|---|---|
+| `elevated-action` | `runas`, `elevate`, `uac-accept`, `yes-on-consent-dialog` | Windows UIPI makes elevation *silently* undrivable ("0 elements, click reports success"); and a consent dialog is the OS asking **the human** |
+| `credential-access` | reading/typing paths matching `.env`, `id_rsa`, `*.pem`, `known_hosts`, `login data`, `cookies`, `logins.json`, `key3.db`, `signons.sqlite`, `credentials`, `~/.private`, `vault` | the desktop agent is the thing that gets phished; a fleet-shared token visible in its pixels is one compromise for the whole crew |
+| `not-a-verb` | `ctrl-alt-del` and any secure-attention sequence | the human's escape hatch must never be reachable by an automation verb |
+
+Everything else is **permitted and scoped**. `deny` is not a policy list any more; it is three ids.
+
+### 7.2 Scope is mandatory and auditable
+
+Every **write** action must name the card it serves: `--task t-…`. No scope ⇒ `refused: "no-scope"`
+— not because we distrust the agent, but because an unattributable action cannot be reviewed, and the
+review queue is the only real backstop once the allowlist is gone. Reads need no scope.
+
+### 7.3 Permission per task (the Director's call, each task, at hand-off)
+
+`ask = important` (default) · `ask = all` · `ask = none`
+
+| action | class | perm |
+|---|---|---|
+| `status` `windows` `tree` `capture` `wait_for` `outcomes` `verify-chain` | read | `none` (always runs) |
+| `invoke` `set_text` `key_chord` `launch` `open_url` `save_as` `tidy` | write | `important` |
+| `upload_file` `set_metadata` `read_published_url` `send_email` `submit_form` | write | `important` |
+| the three ids in §7.1 | — | **`never`** (mode cannot relax this; only a Director edit of this file can) |
+
+`ask=none` is exactly what it says: `important` writes run without a wait — **the read verbs still run,
+so the agent can always look at what it did.** Approval is not a pause on observation.
+
+### 7.4 Tidying is a verb, and it is encouraged
+
+`tidy(kind=memory|close-idle|temp)` exists on purpose: keeping RAM low and the session stable is part of
+the job, not a detour. Budgeted (`tidy_max_per_hour`, default 12 — a tidy loop is a stuck loop), audited
+like any write, and **refused inside other agents' working files** (`git` dirs, another agent's
+`agent/<name>/*` branch checkout, `world/`, `PUSHES.md`). Cleaning is welcome; cleaning up somebody
+else's work is not.
+
+### 7.5 Receipts are a chain, so "what it did" survives an edited log
+
+Each line: `seq, prev, sha256(seq|ts|action|task|state), action, args_digest, task, backend, state,
+approval, before{win,tree_digest,img_sha,bytes}, after{…}, error, why`. `outcomes --verify-chain`
+recomputes it and reports the first broken link **by number**. `after` is how a receipt proves something
+changed instead of proving a command ran.
+
+### 7.6 The human is in the loop over the existing wires (nothing new to run)
+
+`ask=important|all` parks a write as `pending-approval` and the agent asks on the bus
+(`chatcode dm <director> "approve <id> …"`); `bridge.py approve <id>` executes it. The pending line is
+also pushed to the doorbell topic (default `pccontrol`) — **a title and an id, never a capture, never a
+window title that names an account**: ntfy is public by design here, so treat it as an untrusted wire and
+keep the substance in the repo, per §5 of `SYSTEM.md`.
+
+### 7.7 Auto-pause (the stability rule the Director asked for)
+
+`hold_timeout_min` (default **10**): a write parked for approval past that deadline pauses the bridge —
+not the machine, not the session, and not a failure on the agent's part. `bridge.py resume` clears it.
+`bridge.py pause` is the human's instant stop, on localhost only. The bridge **never restarts itself
+into a running state after a pause**: silence is a decision, and it should look like one.
+
+### 7.8 Backends
+
+`sim` — deterministic windows/tree/capture, **the CI backend**; §5's mock contract holds: right
+token+generation ⇒ ok, stale generation ⇒ refused, wrong token ⇒ refused. `null` — every action refused
+`backend-unreachable`, for wiring tests. `windows` — the real one: UIA element-first (`InvokePattern`,
+`ValuePattern.SetValue`, `WindowPattern`), pixels as a labelled fallback, `PrintWindow`-then-screen
+capture, downscale to ≤`capture_max_width` and **≤2 MB** (ntfy.sh's attachment cap), DPI-safe by using
+physical pixels from the tree rather than guessing a scale factor. §7.1's refusals and §7.5's chain are
+backend-independent, so all of it is testable on any box.
+### 7.9 What M1's implementation added to §7.1–§7.8 (recorded, not silently changed)
+
+Written after `tools/bridge.py` + `tests/test_bridge.py` ran on the sim backend. Four of these came
+out of writing the tests, not out of design; they are recorded here because §1–§6 are frozen and the
+Director reads this file, not the source, to know what the bridge will do to his machine.
+
+1. **A read needs no permission but does need a connection.** Reads skip the scope, fence and approval
+   gates (§7.3), and they keep working while paused — the lens is how a human checks on a machine they
+   just stopped. They are *not* allowed to report success against a dead backend: `backend-unreachable`
+   on a `capture` is honest, an empty tree is not (that is UIPI's silent-zero failure in a new costume).
+2. **Pause is a file, not a variable.** `pause` writes `pc/PAUSE` *before* anything else and `act` reads
+   it first, because the human's `bridge.py pause` and the agent's `bridge.py act` are different
+   processes. A halt that resets on the next command is not a halt.
+3. **The availability gate sits *above* the approval gate.** On `ask=important` a parked write waits for
+   a human yes; if the backend is unreachable, the yes would be spent on nothing and the queue would
+   fill with fakes. The bridge refuses first.
+4. **`stale-generation` is only ever the world's own verdict.** `tools/world.py` answers a bad grant with
+   its dedicated `EXIT_STALE` (5); any *other* non-zero exit — a parser error, a moved CLI flag, an
+   unreadable `world/lock.json` — is `fence-unreachable`. A broken referee must never be dressed up as
+   "your grant expired, go re-acquire and retry", because that is the one message that teaches an agent
+   to retry against a fence that has stopped working. (`--fence static --lock-file <f>` lets a test move
+   the world's answer on purpose; `tests/test_bridge.py` also runs the real `world.py` end to end.)
+
+Also: `--token/--generation` are accepted on `act` itself (the grant belongs to the call that needs it),
+the tidy budget is counted from the receipt log rather than memory, and `status` reports `ask`,
+`pending`, `pending_stale_min`, `auto_pause_due`, `hold_timeout_min`, `tidy_max_per_hour`, `fence`,
+`receipts`, `paused`, `pause_reason`.
+
+Evidence: `python3 tests/test_bridge.py` — 30 cases, all five refusal ids (§7.1's three, `no-scope`,
+`not-allowlisted`, plus `bad-args`/`bad-lock`), fence stale/wrong/unreachable, `ask` ×3, tidy budget and
+`tidy-elsewhere`, chain tamper detection, approve/deny, auto-pause, fail-closed backends, the localhost
+HTTP surface. Stdlib only; no network, no Windows required.

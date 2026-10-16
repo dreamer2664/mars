@@ -789,19 +789,15 @@ def main(argv=None):
         return _refuse("no-fence", "on the real machine the lease check is not optional: drop --fence off "
                        "and pass --token/--generation from `world.py pc acquire`")
 
-    if args.backend == "windows":
-        # the import is inside the factory on purpose: policy stays importable (and testable) on any
-        # box, and a machine with no UIA fails here, at the boundary, with a reason.
-        try:
-            import winuia
-            be = winuia.WindowsBackend()
-        except Exception as e:
-            return _refuse("backend-unreachable", str(e), backend="windows")
-    else:
-        be = NullBackend() if args.backend == "null" else SimBackend()
-
-    core = Core(args.log_dir, be, Fence(args.fence, args.root, args.token, args.generation, args.lock_file), ask=args.ask,
-                hold_timeout_min=args.hold_timeout_min, tidy_max_per_hour=args.tidy_max_per_hour)
+    try:
+        core = build_core(backend=args.backend, fence=args.fence, root=args.root, token=args.token,
+                          generation=args.generation, lock_file=args.lock_file, log_dir=args.log_dir,
+                          ask=args.ask, hold_timeout_min=args.hold_timeout_min,
+                          tidy_max_per_hour=args.tidy_max_per_hour)
+    except Refused as e:
+        # the import is inside the factory on purpose: policy stays importable (and testable) on any box,
+        # and a machine with no UIA fails here, at the boundary, with a reason.
+        return _refuse(e.reason, e.hint or str(e), backend=args.backend)
 
     if args.cmd == "serve":
         return serve(core, args.port)
@@ -844,6 +840,31 @@ def main(argv=None):
 
 
 # ---------------------------------------------------------------- HTTP ------
+def build_core(backend: str = "windows", fence: str | None = None, root=None, token=None,
+               generation=None, lock_file=None, log_dir=None, ask: str = "important", **kw) -> Core:
+    """Build a Core from the same names the CLI uses. Extracted because `pc_agent.py` had copied the
+    construction (and got it wrong: it passed the *string* "world" as the fence, so every action died on
+    `'str' object has no attribute 'check'`). One factory means a new caller cannot invent a fourth way to
+    assemble the policy layer — and `tests/test_pc_agent.py` now drives this path for real.
+
+    Raises `Refused` rather than exiting, so a runner can record the reason instead of a traceback."""
+    if fence is None:
+        fence = "world" if backend == "windows" else "off"
+    if fence == "off" and backend == "windows":
+        raise Refused("no-fence", "on the real machine the lease check is not optional: pass "
+                                  "--token/--generation from `world.py pc acquire`")
+    if backend == "windows":
+        try:
+            import winuia
+            be = winuia.WindowsBackend()
+        except Exception as e:
+            raise Refused("backend-unreachable", str(e))
+    else:
+        be = NullBackend() if backend == "null" else SimBackend()
+    f = Fence(fence, root, token, generation, lock_file)
+    return Core(log_dir or DEFAULT_LOG_DIR, be, f, ask=ask, **kw)
+
+
 def _handler_for(core: Core):
     """The localhost control surface, as a class so both serve() and the tests build the same thing."""
     class Handler(BaseHTTPRequestHandler):

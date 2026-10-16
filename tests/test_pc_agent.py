@@ -53,6 +53,13 @@ class Sandbox(unittest.TestCase):
         # the tools the runner imports must be the ones under test
         shutil.copytree(TOOLS, self.work / "tools", dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("__pycache__"))
+        # AND the real .gitignore. Without it, every test in this file ran in a repo where pc/queue was
+        # trackable, while the repo the PC actually clones had `pc/` ignored — so the queue could never be
+        # committed, the runner crashed on its first dirty sync (self.last_id unset), and neither bug could
+        # be seen. A fixture that omits the environment is not a rehearsal.
+        real_ignore = HERE.parent / ".gitignore"
+        if real_ignore.exists():
+            shutil.copy(real_ignore, self.work / ".gitignore")
         (self.work / "world").mkdir(exist_ok=True)
         (self.work / "pc" / "queue").mkdir(parents=True, exist_ok=True)
         git("add", "-A", cwd=self.work)
@@ -329,6 +336,92 @@ class Queueing(Sandbox):
         self.assertEqual(pulled["verb"], "windows")
         self.assertEqual(pulled["id"], cmd["id"])
         self.assertNotIn("token", pulled)
+
+
+class TheChannelSurvivesTheRealRepoRules(Sandbox):
+    """The queue must be publishable in the repo as it actually is, ignore rules included."""
+
+    def test_a_queued_command_can_be_committed_and_seen_by_another_clone(self):
+        self.lock()
+        r = self.runner(fence="static")
+        cmd = r.enqueue("windows", {}, "PCB-01", push=False)
+        git("add", "-A", cwd=self.work)
+        staged = git("diff", "--cached", "--name-only", cwd=self.work).stdout
+        self.assertIn(f"pc/queue/{cmd['id']}.json", staged,
+                      "the queue is ignored by .gitignore: nothing an agent writes would ever reach the PC")
+        git("commit", "-q", "-m", "q", cwd=self.work); git("push", "-q", cwd=self.work)
+        other = self.tmp / "elsewhere"
+        git("clone", "-q", str(self.origin), str(other), cwd=self.tmp)
+        self.assertTrue((other / "pc" / "queue" / f"{cmd['id']}.json").exists(),
+                        "another clone cannot see the command")
+
+    def test_the_machines_own_log_stays_local(self):
+        """Receipts and the PAUSE flag must NOT be published: they are one machine's log, and PAUSE is a
+        local stop switch that a push would turn into a fleet-wide event. The result, by contrast, IS the
+        channel and must reach the other side.
+
+        The first version of this test staged everything and asserted on the staged list — but the runner had
+        already committed and pushed the result itself, so nothing was left to stage and the file it wanted
+        was absent for a reason that had nothing to do with ignoring. Read the PUBLISHED tree instead: that
+        is the artefact the agent actually sees."""
+        self.lock()
+        self.queue("c-1")
+        out = self.runner(fence="static", backend="sim").once()
+        self.assertEqual(out.get("published"), "ok", out.get("published"))
+        self.runner(fence="static").stop("local stop")
+        published = git("ls-tree", "-r", "--name-only", "HEAD", cwd=self.work).stdout
+        self.assertIn("pc/results/c-1.done.json", published, "the result must publish: it is the channel")
+        self.assertNotIn("pc/receipts.jsonl", published, "receipts are one machine's log, not the record")
+        self.assertNotIn("pc/PAUSE", published, "PAUSE is this machine's switch, not a fleet state")
+        # and they are not merely uncommitted — they are UNTRACKABLE, so no future `git add -A` can leak them
+        git("add", "-A", cwd=self.work)
+        staged = git("diff", "--cached", "--name-only", cwd=self.work).stdout
+        self.assertNotIn("pc/PAUSE", staged, "an add -A must not be able to publish the stop switch")
+        self.assertNotIn("pc/receipts.jsonl", staged, "an add -A must not be able to publish the log")
+
+
+class Publishing(Sandbox):
+    """A result that never left the machine looks exactly like a command that never ran."""
+
+    def test_the_answer_is_published_in_the_same_turn_it_was_produced(self):
+        self.lock()
+        self.queue("c-one-turn")
+        out = self.runner(fence="static", backend="sim").once()
+        self.assertEqual(out["turn"], "executed")
+        self.assertEqual(out.get("published"), "ok", out.get("published"))
+        # a THIRD clone — the agent's side — sees it after a plain pull, with no second turn anywhere
+        agent_side = self.tmp / "agent-side"
+        git("clone", "-q", str(self.origin), str(agent_side), cwd=self.tmp)
+        done = agent_side / "pc" / "results" / "c-one-turn.done.json"
+        self.assertTrue(done.exists(), "the result was produced and never published")
+        rec = json.loads(done.read_text())
+        self.assertEqual(rec["status"], "done")
+        self.assertFalse(list((agent_side / "pc" / "queue").glob("*.json")),
+                         "the command must be consumed in the same commit as its result")
+
+    def test_a_refusal_is_published_too(self):
+        """The refusals are the most important thing for the agent to receive: 'I cannot reach your desktop'
+        must arrive the same way 'done' does, or the agent waits forever on a command that already died."""
+        self.lock()
+        self.queue("c-refuse")
+        r = self.runner(fence="static", backend="null")     # null backend refuses every action
+        out = r.once()
+        self.assertEqual(out["turn"], "executed")
+        self.assertEqual(out.get("published"), "ok")
+        agent_side = self.tmp / "agent-side2"
+        git("clone", "-q", str(self.origin), str(agent_side), cwd=self.tmp)
+        rec = json.loads((agent_side / "pc" / "results" / "c-refuse.done.json").read_text())
+        self.assertEqual(rec["status"], "refused")
+        self.assertTrue(rec["reason"], "a refusal with no reason is a dead end for the reader")
+
+    def test_a_failed_push_is_reported_in_the_turn_not_swallowed(self):
+        self.lock()
+        self.queue("c-nopush")
+        git("remote", "set-url", "origin", str(self.tmp / "gone.git"), cwd=self.work)
+        out = self.runner(fence="static", backend="sim").once()
+        self.assertEqual(out["turn"], "executed")
+        self.assertTrue(str(out.get("published", "")).startswith("push-failed"),
+                        f"a turn that cannot publish must say so: {out.get('published')!r}")
 
 
 class AgainstTheRealWorld(Sandbox):

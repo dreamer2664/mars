@@ -99,7 +99,10 @@ def parse_ts(ts: str):
 
 
 def run_git(*args, cwd: Path = REPO, check: bool = False):
-    """Git, quietly. A runner that dies because `git pull` printed to stderr on a fast-forward is a runner
+    """The low-level git primitive. Anything inside the runner must use `Runner.git()`, which pins the
+    working directory to that runner's repo; this default is for the module-level helpers only.
+
+    Quiet on purpose: a runner that dies because `git pull` printed to stderr on a fast-forward is a runner
     that cannot be left unattended for an hour."""
     p = subprocess.run(["git", *args], cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        text=True)
@@ -128,6 +131,11 @@ class Runner:
         self.repo = Path(repo)
         self.dry_run = dry_run
         self.backend, self.fence = backend, fence
+        # set here, not inside once(): sync() names the current turn in its commit message and sync()
+        # runs BEFORE once() assigns anything. The real repo added a second reason to get this right —
+        # its `.gitignore` used to hide pc/queue entirely, so nothing was ever staged and the AttributeError
+        # never fired in a test that copied only tools/. Two bugs hiding each other.
+        self.last_id = None
         self.log_dir = log_dir or str(self.repo / "pc")
         self.queue = self.repo / QUEUE
         self.results = self.repo / RESULTS
@@ -264,36 +272,65 @@ class Runner:
                 "backend": self.backend, "runner": "pc_agent", **(extra or {})}
 
     def checkout(self):
-        p = run_git("rev-parse", "--short", "HEAD")
+        p = self.git("rev-parse", "--short", "HEAD")
         return p.stdout.strip()[:12] or "unknown"
 
     # ---------- git, the transport ----------
-    def sync(self) -> str:
-        """Pull then push. Never rebase away a record, never force anything: the queue is append-only, and a
-        conflict here means two runners or a human mid-edit — which is exactly when to stop and say so."""
+    def git(self, *args):
+        """Every git call this runner makes goes through here, so it can only ever be about `self.repo`.
+
+        This indirection is not tidiness. `run_git` defaults to the directory THIS FILE lives in, which is
+        right for the module-level helpers and was wrong for the runner: its calls ignored `--repo` entirely.
+        On the PC those two paths are the same, so nothing showed; in a two-clone rehearsal the PC pushed to
+        the wrong remote and the agent never saw a single answer — while every single-clone test still
+        passed, because in those the "wrong" repo happened to be the test repo. A test that cannot tell the
+        difference between the right repo and the wrong one is not testing the transport at all.
+        """
+        return run_git(*args, cwd=self.repo)
+
+    def pull(self) -> str:
+        """Take whatever the other side pushed."""
         if self.dry_run:
             return "dry-run: no git"
         if not (self.repo / ".git").exists():
             return "not-a-repo: this is a checkout without git, so it has no channel"
-        run_git("pull", "--no-rebase", "--no-edit", "-q")
+        self.git("pull", "--no-rebase", "--no-edit", "-q")
+        return "ok"
+
+    def sync(self) -> str:
+        """Pull then push. Never rebase away a record, never force anything: the queue is append-only, and a
+        conflict here means two runners or a human mid-edit — which is exactly when to stop and say so.
+
+        NOTE the order in `once()`: pull, execute, publish, **push**. An earlier version pushed only at the
+        *start* of a turn, which meant the answer to a command was not published until the following turn —
+        invisible in every single-clone test, and on a two-clone rehearsal it showed as "the PC ran it and
+        the agent saw nothing". Worse, the last turn before a stop would leave its result stranded on disk
+        with nobody left to push it. The turn's own record now carries whether the push succeeded, because a
+        result that never left the machine is indistinguishable, to the agent waiting for it, from a command
+        that was never executed."""
+        if self.dry_run:
+            return "dry-run: no git"
+        if not (self.repo / ".git").exists():
+            return "not-a-repo: this is a checkout without git, so it has no channel"
+        self.git("pull", "--no-rebase", "--no-edit", "-q")
         if self._dirty_queue():
-            run_git("add", QUEUE, RESULTS)
-            p = run_git("commit", "-q", "-m",
+            self.git("add", QUEUE, RESULTS)
+            p = self.git("commit", "-q", "-m",
                         f"pc_agent: <agent> turn ({self.last_id or '-'}) — receipts travel with the command")
             if p.returncode != 0 and "nothing to commit" not in p.stdout:
                 return f"commit-failed: {p.stdout.strip()[:200]}"
-        p = run_git("push", "-q")
+        p = self.git("push", "-q")
         if p.returncode != 0:
             return f"push-failed: {p.stdout.strip()[:200]} (is a credential configured for this clone?)"
         return "ok"
 
     def _dirty_queue(self):
-        p = run_git("status", "--porcelain", "--", QUEUE, RESULTS)
+        p = self.git("status", "--porcelain", "--", QUEUE, RESULTS)
         return bool(p.stdout.strip())
 
     # ---------- one turn ----------
     def once(self, execute: bool = True) -> dict:
-        self.sync()
+        self.pull()
         stop = self.paused()
         cmds = self.pending()
         if stop:
@@ -301,7 +338,7 @@ class Runner:
                     "at": z(), "checkout": self.checkout()}
         if not cmds:
             return {"turn": "idle", "reason": "", "detail": "", "waiting": 0, "at": z(),
-                    "checkout": self.checkout()}
+                    "checkout": self.checkout(), "published": self.sync()}
         cmd = cmds[0]
         self.last_id = str(cmd.get("id"))
         # `--dry-run` means dry on BOTH sides. An earlier version guarded the git calls and then executed
@@ -312,8 +349,10 @@ class Runner:
                     "at": z(), "checkout": self.checkout(), "lease": self.lease_problem(cmd) or "ok"}
         rec = self.execute(cmd)
         self._publish(cmd, rec)
+        published = self.sync()                 # the answer has to leave this machine in the same turn
+        rec["published"] = published
         return {"turn": "executed", "reason": rec["reason"], "detail": rec["detail"], "waiting": len(cmds) - 1,
-                "at": z(), "checkout": self.checkout(), "record": rec}
+                "at": z(), "checkout": self.checkout(), "published": published, "record": rec}
 
     def _publish(self, cmd, rec):
         """Write the result and consume the command in the SAME commit: a record that exists while the
@@ -343,6 +382,9 @@ class Runner:
                 line = f"pc_agent[{r['at']}] {r['turn']} checkout={r['checkout']}"
                 if r["reason"]:
                     line += f" {r['reason']}: {r['detail'][:120]}"
+                if r.get("published") not in (None, "ok"):
+                    # the loudest thing this loop can print: the work happened and the world cannot see it
+                    line += f"  !! NOT PUBLISHED: {r['published']}"
                 print(line, flush=True)
             turns += 1
             if max_turns and turns >= max_turns:
@@ -382,9 +424,9 @@ class Runner:
         f = self.queue / f"{cid}.json"
         f.write_text(json.dumps(cmd, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         if push and not self.dry_run:
-            run_git("add", QUEUE)
-            run_git("commit", "-q", "-m", f"queue {cid}: {verb} for {task}")
-            p = run_git("push")
+            self.git("add", QUEUE)
+            self.git("commit", "-q", "-m", f"queue {cid}: {verb} for {task}")
+            p = self.git("push")
             if p.returncode != 0:
                 raise RuntimeError(f"queued locally but could not push: {p.stdout.strip()[:200]}")
         return cmd

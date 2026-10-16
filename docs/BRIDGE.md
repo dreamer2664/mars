@@ -231,7 +231,9 @@ and testable anywhere.
 
 ```powershell
 git clone https://github.com/dreamer2664/mars.git $HOME\mars; cd $HOME\mars
-git fetch origin pull/5/head:pc-01; git checkout pc-01          # while the PR is open
+git fetch origin agent/fabius/pccontrol-m1; git checkout -b pc-01 FETCH_HEAD   # the BRANCH, not the PR ref
+# (a second run: `git fetch origin agent/fabius/pccontrol-m1; git reset --hard FETCH_HEAD` —
+#  fetching into a checked-out branch is refused, and refs/pull/N/head lags the branch by a beat)
 python tools\bridge.py selftest                                 # ~60 s, nothing real: PASS-POLICY-ONLY
 pip install uiautomation
 python tools\bridge.py --backend windows selftest               # the desktop answer: PASS or FAIL
@@ -239,6 +241,12 @@ python tools\bridge.py --backend windows selftest               # the desktop an
 
 `python tools\bridge.py --backend windows --token <t> --generation <n> act capture --window id-0 --save-to lens.png`
 (window ids read `id-<n>` on both backends; `--window 0`, `--window id-0` and `--window Roblox` all resolve.)
+
+**Every answer names its own source.** `status`/`selftest` print `checkout` and every receipt carries `at` —
+the short SHA of the code that answered. This was added because a second field run produced output *identical*
+to the first: not a failed fix, a `git fetch` that had failed, and nothing on the page could distinguish the
+two. A total that moves with the backend is the same class of trap, so `selftest` is **13 checks on every
+backend**, sim included.
 
 **Field result, 2026-10-16 19:06Z — the first real Windows run (Carlo's desktop).** `--backend windows
 selftest` came back `FAIL 9/12`, and it was right to: `observe:tree` raised `TypeError: 'bool' object is

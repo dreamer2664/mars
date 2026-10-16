@@ -224,3 +224,28 @@ Evidence: `python3 tests/test_bridge.py` — 30 cases (+ `tests/test_winuia.py`,
 HTTP surface. Stdlib only; no network, no Windows required. `tools/winuia.py` is the sole file that imports
 Windows-only modules, and it imports them inside `build_transport()` so the policy layer stays importable
 and testable anywhere.
+
+---
+
+## 8. First run on a real PC (the short version; the long one is the manager's `RUN-ON-THE-PC.md`)
+
+```powershell
+git clone https://github.com/dreamer2664/mars.git $HOME\mars; cd $HOME\mars
+git fetch origin pull/5/head:pc-01; git checkout pc-01          # while the PR is open
+python tools\bridge.py selftest                                 # ~60 s, nothing real: PASS-POLICY-ONLY
+pip install uiautomation
+python tools\bridge.py --backend windows selftest               # the desktop answer: PASS or FAIL
+```
+
+`python tools\bridge.py --backend windows --token <t> --generation <n> act capture --window 0 --save-to lens.png`
+is then one frame of your own desktop, through the lease, with a digest in the chain.
+
+Three properties of this section are load-bearing and are enforced in code, not in prose:
+
+* `--backend windows` **refuses to run with `--fence off`** (`no-fence`). The default fence is chosen from
+  what the bridge would act *on*: `world` for a real desktop, `off` for the sim. An unfenced desktop bridge
+  is a remote control with extra steps.
+* `selftest` has three verdicts, not two. `PASS-POLICY-ONLY` means "the gates work, no machine was touched" —
+  reading it as "it works" is the misjudgement the third verdict exists to prevent.
+* Every refusal is printed to **stdout as one JSON object** with exit code 1, so an agent, a script and the
+  phone bridge all read the same answer. A tool that reports success on failure is worse than no tool.

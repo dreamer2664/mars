@@ -14,6 +14,7 @@ repo.
 
 import contextlib
 import io
+import tempfile
 import json
 import sys
 import tempfile

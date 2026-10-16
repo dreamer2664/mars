@@ -393,6 +393,39 @@ class SelfTest(Case):
         self.assertEqual(out["verdict"], "FAIL")
         self.assertLess(out["passed"], out["total"])
 
+    def test_save_to_actually_writes_the_file(self):
+        """A flag that is accepted and ignored is how "I sent you the frame" ends up meaning nothing.
+        Note the dash spelling: `--save-to` on the CLI, `args.save_to` in the code."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "sub" / "frame.png"
+            code, o, _ = self.act("capture", "--window", "id-1", "--save-to", str(target))
+            self.assertEqual(code, 0, o)
+            self.assertTrue(target.exists(), "the file must exist, not just be named in the receipt")
+            head = target.read_bytes()[:8]
+            self.assertEqual(head, b"\x89PNG\r\n\x1a\n", "and it must be a real PNG")
+            self.assertEqual(o["result"]["saved_bytes"], target.stat().st_size)
+            self.assertEqual(o["result"]["saved_to"], str(target),
+                             "the receipt names the file the caller asked for — nothing cleverer")
+            self.assertEqual(o["result"]["saved_bytes"], target.stat().st_size)
+
+    def test_real_backend_without_a_fence_is_refused(self):
+        """The default must be safe on the machine that matters: `--backend windows` refuses to run with
+        the fence switched off, because an unfenced desktop bridge is a remote control with extra steps.
+        (The default itself is `world` — tested by not needing to pass anything.)"""
+        code, o, err = run("--backend", "windows", "--fence", "off", "--log-dir",
+                           str(Path(self.tmp) / "nf"), "status")
+        self.assertEqual(code, 1)
+        self.assertIn("no-fence", err + json.dumps(o))
+        # and the guard fires before the backend probe, so a Linux box with --fence off says "no fence",
+        # not "no UIA" — the operator learns the policy answer, not the platform one.
+        _, o2, _ = run("--backend", "windows", "--fence", "off", "--log-dir",
+                       str(Path(self.tmp) / "nf2"), "status")
+        self.assertEqual(o2["refused"], "no-fence", "the refusal must also be readable on stdout")
+        # the DEFAULT is the safe one: nothing passed at all on windows means fence=world, never off
+        _, o3, _ = run("--backend", "windows", "--log-dir", str(Path(self.tmp) / "nf3"), "status")
+        self.assertNotEqual(o3.get("refused"), "no-fence", o3)
+        self.assertEqual(o3["refused"], "backend-unreachable", "it got as far as asking for UIA")
+
     def test_selftest_is_itself_a_receipt(self):
         core = bridge.Core(Path(self.tmp) / "st3", bridge.SimBackend(), bridge.Fence("off"), ask="none")
         core.selftest()

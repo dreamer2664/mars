@@ -452,6 +452,15 @@ class Core:
             # looking cannot mutate, and the lens is how the human checks on a paused machine.
             # It does still need a live connection — an unverified view is worse than none.
             obs = self.backend.observe(action, args)
+            # `--save-to` is honoured here, at the one boundary that decides what may leave the machine,
+            # rather than inside a backend: a flag that is accepted and ignored is how an agent reports
+            # "sent you the frame" having sent nothing.
+            save_to = args.get("save_to")
+            if save_to and obs.get("img"):
+                p_ = Path(save_to).expanduser()
+                p_.parent.mkdir(parents=True, exist_ok=True)
+                p_.write_bytes(obs["img"])
+                obs = dict(obs, saved_to=str(p_), saved_bytes=len(obs["img"]))
             return self.append({"action": action, "task": task or "-", "args_digest": digest(args),
                                 "perm": perm, "class": "read", "backend": self.backend.name,
                                 "approval": "none-required", "result": _obs(obs),
@@ -533,6 +542,9 @@ class Core:
         real = self.backend.name == "windows"
         # informational, never a failure: on the sim this line is the *explanation* of the verdict, and
         # a check that can only go red in a mode where red is expected trains people to ignore red.
+        chk("fence-live", (not real) or self.fence.mode != "off",
+            f"fence={self.fence.mode}" + ("" if self.fence.mode != "off" or not real else
+            " — a real desktop driven without the world's lease check is a remote control, not a bridge"))
         chk("backend", True, f"backend={self.backend.name}"
             + ("" if real else " — the sim proves the gates, not the desktop"))
 
@@ -654,11 +666,22 @@ def _age_min(iso):
 
 
 # -------------------------------------------------------------------- CLI ---
+def _refuse(reason: str, hint: str = "", **extra) -> int:
+    """One place a refusal is formatted, so a caller (agent, script, phone bridge) never has to read
+    two streams to learn whether the bridge said no. Exit code 1 is the same answer in mechanical form."""
+    print(json.dumps(dict({"ok": False, "refused": reason, "hint": hint}, **extra),
+                      sort_keys=True, ensure_ascii=False, default=str))
+    return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bridge.py", description=__doc__.splitlines()[0])
     ap.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
     ap.add_argument("--backend", default="sim", choices=["sim", "null", "windows"])
-    ap.add_argument("--fence", default="off", choices=["off", "static", "world"])
+    ap.add_argument("--fence", default=None, choices=["off", "static", "world"],
+                    help="defaults to `world` on the real desktop and `off` for the sim; `off` + "
+                         "--backend windows is refused, because a bridge that skips the lease check "
+                         "is not a bridge, it is a remote control")
     ap.add_argument("--root", default=None, help="mars checkout root for --fence world")
     ap.add_argument("--token", default=None, help="fallback grant for approve/resume; act has its own")
     ap.add_argument("--generation", default=None, help="fallback generation for approve/resume")
@@ -676,7 +699,9 @@ def main(argv=None):
     for f in ("window", "element", "text", "keys", "app", "args", "url", "path", "channel", "video",
               "fields", "to", "subject", "body", "attach", "form", "values", "kind", "target",
               "condition", "timeout_s", "region", "max_width", "save_to", "depth", "filter", "include"):
-        a.add_argument(f"--{f.replace('-', '_')}", default=None)
+        # dash on the command line, underscore in the code. Declaring the underscore spelling as the
+        # dest (and not as a flag) is what keeps `args.save_to` and `--save-to` the same thing.
+        a.add_argument(f"--{f.replace('_', '-')}", dest=f, default=None)
     a.add_argument("--allow-budget-bypass", action="store_true", help=argparse.SUPPRESS)
     o = g.add_parser("outcomes"); o.add_argument("--last", type=int, default=50)
     o.add_argument("--verify-chain", action="store_true")
@@ -687,6 +712,15 @@ def main(argv=None):
     s = g.add_parser("serve"); s.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
 
+    if args.fence is None:
+        # The safe default is chosen from what the bridge would act *on*, not from a global constant.
+        # On the sim, no fence means fast tests; on a real desktop it would mean "any process holding
+        # the repo can move Carlo's mouse", which is the exact failure §7.5 exists to prevent.
+        args.fence = "world" if args.backend == "windows" else "off"
+    if args.fence == "off" and args.backend == "windows":
+        return _refuse("no-fence", "on the real machine the lease check is not optional: drop --fence off "
+                       "and pass --token/--generation from `world.py pc acquire`")
+
     if args.backend == "windows":
         # the import is inside the factory on purpose: policy stays importable (and testable) on any
         # box, and a machine with no UIA fails here, at the boundary, with a reason.
@@ -694,12 +728,10 @@ def main(argv=None):
             import winuia
             be = winuia.WindowsBackend()
         except Exception as e:
-            be = NullBackend()
-            be.name = f"windows-unavailable"
-            print(json.dumps({"ok": False, "backend": "windows", "refused": "backend-unreachable",
-                              "hint": str(e)}, sort_keys=True), file=sys.stderr)
+            return _refuse("backend-unreachable", str(e), backend="windows")
     else:
         be = NullBackend() if args.backend == "null" else SimBackend()
+
     core = Core(args.log_dir, be, Fence(args.fence, args.root, args.token, args.generation, args.lock_file), ask=args.ask,
                 hold_timeout_min=args.hold_timeout_min, tidy_max_per_hour=args.tidy_max_per_hour)
 
@@ -738,8 +770,7 @@ def main(argv=None):
         else:
             raise Refused("unknown-command", args.cmd)
     except Refused as r:
-        print(json.dumps({"ok": False, "refused": r.reason, "hint": r.hint}, sort_keys=True))
-        return 1
+        return _refuse(r.reason, r.hint)
     print(json.dumps(out, sort_keys=True, ensure_ascii=False, default=str))
     return 0
 

@@ -374,6 +374,35 @@ class FailClosedAndControls(Case):
         srv_holder["s"].shutdown()
 
 
+class Provenance(unittest.TestCase):
+    """Every answer the bridge gives must say which code produced it. Without this, an unchanged FAIL and
+    an unfixed code are indistinguishable — which is exactly what happened on the Director's PC at 19:12Z
+    (identical output, because the fetch had silently failed)."""
+
+    def test_status_and_selftest_carry_the_checkout(self):
+        tmp = tempfile.mkdtemp()
+        core = bridge.Core(Path(tmp), bridge.SimBackend(), bridge.Fence("off"), ask="none")
+        sha = core.checkout()
+        self.assertTrue(sha and len(sha) >= 4, sha)
+        self.assertEqual(core.status()["checkout"], sha)
+        self.assertEqual(core.selftest()["checkout"], sha)
+
+    def test_receipts_are_stampable_and_the_chain_survives_it(self):
+        tmp = tempfile.mkdtemp()
+        core = bridge.Core(Path(tmp), bridge.SimBackend(), bridge.Fence("off"), ask="none")
+        core.act("capture", {"window": "1"})
+        rows = core.outcomes(10, True)
+        self.assertTrue(rows["chain"]["ok"], "a new field must not break an existing chain")
+        self.assertIn("at", rows["receipts"][0])
+
+    def test_selftest_total_is_backend_independent(self):
+        """`total` cannot depend on the backend, or a runbook that says 'expect 13/13' is a lie on the sim."""
+        for be in (bridge.SimBackend(), bridge.NullBackend()):
+            out = bridge.Core(Path(tempfile.mkdtemp()), be, bridge.Fence("off"), ask="none").selftest()
+            self.assertEqual(out["total"], 13, f"{be.name}: {[c['name'] for c in out['checks']]}")
+            self.assertIn("library-shape", [c["name"] for c in out["checks"]])
+
+
 class SelfTest(Case):
     """The self-test is the gate a brand-new PC runs through, so its *verdict semantics* are load-bearing
     — and the failure mode I am guarding against here is the flattering green light, not the red one."""

@@ -325,6 +325,23 @@ class Fence:
 class Core:
     # The knobs below are the Director's per-task calls (§7.3, §7.4, §7.7). None of them can
     # relax §7.1: the three refusals are not configurable, by design.
+    @staticmethod
+    def checkout() -> str:
+        """Which commit this file came from. Cheap, cached, and it answers the question that a
+        byte-identical FAIL cannot: did the update actually land, or am I re-running old code?"""
+        if getattr(Core, "_checkout_cache", None) is not None:
+            return Core._checkout_cache
+        sha = "unknown"
+        try:
+            r = subprocess.run([sys.executable and "git", "-C", str(Path(__file__).resolve().parents[1]),
+                                "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=10)
+            if r.returncode == 0 and r.stdout.strip():
+                sha = r.stdout.strip()
+        except Exception:
+            pass
+        Core._checkout_cache = sha
+        return sha
+
     def __init__(self, log_dir, backend, fence, ask="important", hold_timeout_min=HOLD_TIMEOUT_MIN_DEFAULT,
                  tidy_max_per_hour=TIDY_MAX_PER_HOUR_DEFAULT, capture_max_width=CAPTURE_MAX_WIDTH_DEFAULT):
         self.log_dir, self.backend, self.fence = Path(log_dir), backend, fence
@@ -356,7 +373,7 @@ class Core:
 
     def append(self, rec):
         seq, prev = self._last()
-        rec = dict(rec, schema=SCHEMA, seq=seq + 1, prev=prev, ts=z())
+        rec = dict(rec, schema=SCHEMA, seq=seq + 1, prev=prev, ts=z(), at=self.checkout())
         body = {k: rec[k] for k in ("seq", "ts", "action", "task", "state")}
         rec["sha"] = hashlib.sha256(f"{rec['seq']}|{rec['ts']}|{rec['action']}|{rec['task']}|{rec['state']}".encode()).hexdigest()[:16]
         rec["_body_digest"] = digest(body)
@@ -552,17 +569,21 @@ class Core:
         real = self.backend.name == "windows"
         # informational, never a failure: on the sim this line is the *explanation* of the verdict, and
         # a check that can only go red in a mode where red is expected trains people to ignore red.
-        if real:
-            ver = getattr(getattr(self.backend, "t", None), "auto", None)
-            ver = getattr(ver, "__version__", "unknown") if ver else "unknown"
-            missing = []
-            try:
-                import winuia
-                missing = winuia.UiaTransport.probe(self.backend.t.auto) if ver != "unknown" else []
-            except Exception as e:
-                missing = [f"probe failed: {e}"]
-            chk("library-shape", not missing,
-                f"uiautomation {ver}" + ("" if not missing else " — missing: " + ", ".join(missing)))
+        # The check runs on every backend, so `total` is the same number whoever executes it: a runbook
+        # that says "expect 13/13" and meets 12 on the sim teaches people to distrust the count.
+        ver, missing = "not loaded", []
+        try:
+            import winuia
+            auto = getattr(getattr(self.backend, "t", None), "auto", None)
+            if auto is not None:
+                ver = getattr(auto, "__version__", "unknown")
+                missing = winuia.UiaTransport.probe(auto)
+            else:
+                ver = f"n/a ({self.backend.name} backend)"
+        except Exception as e:
+            missing = [f"probe failed: {type(e).__name__}: {e}"]
+        chk("library-shape", not missing,
+            f"uiautomation {ver}" + ("" if not missing else " — missing: " + ", ".join(missing)))
         chk("fence-live", (not real) or self.fence.mode != "off",
             f"fence={self.fence.mode}" + ("" if self.fence.mode != "off" or not real else
             " — a real desktop driven without the world's lease check is a remote control, not a bridge"))
@@ -630,7 +651,8 @@ class Core:
         passed = sum(1 for c in checks if c["ok"])
         all_ok = passed == len(checks)
         verdict = "PASS" if (all_ok and real) else ("PASS-POLICY-ONLY" if all_ok else "FAIL")
-        return {"time": z(), "backend": self.backend.name, "passed": passed, "total": len(checks),
+        return {"time": z(), "checkout": self.checkout(), "backend": self.backend.name,
+                "passed": passed, "total": len(checks),
                 "checks": checks, "notes": notes, "verdict": verdict,
                 "meaning": {"PASS": "a real desktop answered the lens and every gate refused correctly",
                             "PASS-POLICY-ONLY": "the gates are proven; no machine was touched (sim backend)",
@@ -658,7 +680,8 @@ class Core:
                 self.pause_file.read_text().strip() if self.pause_file.exists() else "")
         d = self._pending()
         stale = [k for k, v in d.items() if (_age_min(v.get("asked_ts")) or 0) > self.hold_timeout_min]
-        return {"time": z(), "backend": self.backend.status(), "paused": self.paused,
+        return {"time": z(), "checkout": self.checkout(), "backend": self.backend.status(),
+                "paused": self.paused,
                 "pause_reason": self.pause_reason or None, "ask": self.ask,
                 "pending": list(d), "pending_stale_min": [round(_age_min(d[k]['asked_ts']) or 0, 1) for k in d],
                 "auto_pause_due": stale, "hold_timeout_min": self.hold_timeout_min,

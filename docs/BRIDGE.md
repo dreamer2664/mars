@@ -114,7 +114,12 @@ exactly **three permanent refusals** and refuses **by name**, before any backend
 | `credential-access` | reading/typing paths matching `.env`, `id_rsa`, `*.pem`, `known_hosts`, `login data`, `cookies`, `logins.json`, `key3.db`, `signons.sqlite`, `credentials`, `~/.private`, `vault` | the desktop agent is the thing that gets phished; a fleet-shared token visible in its pixels is one compromise for the whole crew |
 | `not-a-verb` | `ctrl-alt-del` and any secure-attention sequence | the human's escape hatch must never be reachable by an automation verb |
 
-Everything else is **permitted and scoped**. `deny` is not a policy list any more; it is three ids.
+Everything else is **permitted and scoped**. `deny` is not a policy list any more; it is four ids — the
+three above plus `forbidden-target`, which refuses `captchaproject`/`captchaprogram` in a URL, a path, an
+app argument or a window title. It was added *because* the Director chose to keep one shared crew token
+(`ledger/DECISIONS.md` D-01): his own client admits its guard there "is not a wall - it is the promise written
+down where it cannot be forgotten", and a desktop agent with a browser open is one misclick from a repo it
+never meant to visit. The id grants nothing; it removes the accident.
 
 ### 7.2 Scope is mandatory and auditable
 
@@ -131,7 +136,7 @@ review queue is the only real backstop once the allowlist is gone. Reads need no
 | `status` `windows` `tree` `capture` `wait_for` `outcomes` `verify-chain` | read | `none` (always runs) |
 | `invoke` `set_text` `key_chord` `launch` `open_url` `save_as` `tidy` | write | `important` |
 | `upload_file` `set_metadata` `read_published_url` `send_email` `submit_form` | write | `important` |
-| the three ids in §7.1 | — | **`never`** (mode cannot relax this; only a Director edit of this file can) |
+| the ids in §7.1 (+ `forbidden-target`) | — | **`never`** (mode cannot relax this; only a Director edit of this file can) |
 
 `ask=none` is exactly what it says: `important` writes run without a wait — **the read verbs still run,
 so the agent can always look at what it did.** Approval is not a pause on observation.

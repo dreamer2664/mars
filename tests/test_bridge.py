@@ -76,6 +76,18 @@ class Refusals(Case):
         code, o, _ = run(*self.L, "--ask", "none", "act", "key_chord", "--keys", "ctrl+alt+del", "--task", "t-1")
         self.assertEqual(o["refused"], "not-a-verb", "the mode must not be an escape hatch")
 
+    def test_forbidden_projects_are_unreachable_even_by_accident(self):
+        """The shared-token decision (Director, 2026-10-16) means this agent's credential can technically
+        reach repos it must not touch. chatcode protects that with a code guard, not a memory; so does this.
+        A window title or a URL is enough to trip it — the point is the *attempt*, and an attempt made in
+        the dark (a browser tab left open) is a report, not a crime."""
+        for verb, argv in (("open_url", ["--url", "https://github.com/dreamer2664/captchaproject", "--task", "t-1"]),
+                           ("save_as", ["--path", "C:/repo/captchaproject/out.zip", "--task", "t-1"]),
+                           ("launch", ["--app", "Code", "--args", "C:\\work\\captchaprogram", "--task", "t-1"]),
+                           ("capture", ["--window", "captchaproject — main.py"])):
+            code, o, _ = self.act(verb, *argv)
+            self.assertEqual(o["refused"], "forbidden-target", argv)
+
     def test_unknown_verb_refused_by_name(self):
         code, o, _ = self.act("format_c_drive", "--task", "t-1")
         self.assertEqual(o["refused"], "not-allowlisted")

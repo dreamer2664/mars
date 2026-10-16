@@ -64,6 +64,12 @@ REFUSALS = [
                                      r"login data|web data|\bcredentials\b|credential store|"
                                      r"cmdkey|lazagne|mimikatz|\btoken\b.{0,12}\bread\b", re.I)),
     ("not-a-verb", re.compile(r"ctrl\+?alt\+?del|ctrl alt del|secure.?attention|sas\b|taskmgr\?.*logout", re.I)),
+    # The Director keeps one shared GitHub token for the whole crew (his call, 2026-10-16), and chatcode
+    # says the quiet part itself: its captchaproject guard "is not a wall - it is the promise written down
+    # where it cannot be forgotten, misread or argued with". So the promise is written down here too, at the
+    # one boundary that moves a mouse. It grants nothing and removes no privilege; it removes the accident
+    # (an agent with a browser open is one misclick from a forbidden repo it never meant to visit).
+    ("forbidden-target", re.compile(r"captchaproject|captchaprogram", re.I)),
 ]
 
 # ------------------------------------------------------------------ actions ---
@@ -535,7 +541,9 @@ class Core:
         for action, args, want in (("key_chord", {"keys": "ctrl+alt+del", "task": "t-selftest"}, "not-a-verb"),
                                   ("launch", {"app": "runas", "task": "t-selftest"}, "elevated-action"),
                                   ("set_text", {"element": "id-0-0", "text": "read ~/.private/crew.env",
-                                               "task": "t-selftest"}, "credential-access")):
+                                               "task": "t-selftest"}, "credential-access"),
+                                  ("open_url", {"url": "https://github.com/dreamer2664/captchaproject",
+                                                "task": "t-selftest"}, "forbidden-target")):
             got = None
             try:
                 self.act(action, dict(args))

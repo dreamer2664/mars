@@ -175,6 +175,16 @@ token+generation ⇒ ok, stale generation ⇒ refused, wrong token ⇒ refused. 
 capture, downscale to ≤`capture_max_width` and **≤2 MB** (ntfy.sh's attachment cap), DPI-safe by using
 physical pixels from the tree rather than guessing a scale factor. §7.1's refusals and §7.5's chain are
 backend-independent, so all of it is testable on any box.
+
+**Status of `windows` (built, not yet field-proven).** `tools/winuia.py` implements it: one enumeration
+feeds both the tree an agent reads and the element a click resolves to (`_flat`), which is the difference
+between a stale id that refuses and a stale id that clicks the wrong button. Captures are refused — not
+downscaled, not guessed — when `PrintWindow` yields no pixels or when the frame would break ntfy's 2 MB
+cap; a 0-element tree on a *visible* window is flagged as probable UIPI rather than left to read as "there
+is nothing in this app"; unimplemented side effects raise instead of returning ok. `tests/test_winuia.py`
+(18 cases) proves those decisions against a fake transport on Linux. **The real `uiautomation` calls are
+unexecuted until the first run on the PC**, so the honest rung for `windows` is logic-tested, not
+field-proven — PCB-01 exists to change that and nothing before it claims otherwise.
 ### 7.9 What M1's implementation added to §7.1–§7.8 (recorded, not silently changed)
 
 Written after `tools/bridge.py` + `tests/test_bridge.py` ran on the sim backend. Four of these came
@@ -203,7 +213,9 @@ the tidy budget is counted from the receipt log rather than memory, and `status`
 `pending`, `pending_stale_min`, `auto_pause_due`, `hold_timeout_min`, `tidy_max_per_hour`, `fence`,
 `receipts`, `paused`, `pause_reason`.
 
-Evidence: `python3 tests/test_bridge.py` — 30 cases, all five refusal ids (§7.1's three, `no-scope`,
+Evidence: `python3 tests/test_bridge.py` — 30 cases (+ `tests/test_winuia.py`, 18 cases, for the Windows backend's decisions), all five refusal ids (§7.1's three, `no-scope`,
 `not-allowlisted`, plus `bad-args`/`bad-lock`), fence stale/wrong/unreachable, `ask` ×3, tidy budget and
 `tidy-elsewhere`, chain tamper detection, approve/deny, auto-pause, fail-closed backends, the localhost
-HTTP surface. Stdlib only; no network, no Windows required.
+HTTP surface. Stdlib only; no network, no Windows required. `tools/winuia.py` is the sole file that imports
+Windows-only modules, and it imports them inside `build_transport()` so the policy layer stays importable
+and testable anywhere.

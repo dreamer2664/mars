@@ -362,5 +362,32 @@ class FailClosedAndControls(Case):
         srv_holder["s"].shutdown()
 
 
+class SelfTest(Case):
+    """The self-test is the gate a brand-new PC runs through, so its *verdict semantics* are load-bearing
+    — and the failure mode I am guarding against here is the flattering green light, not the red one."""
+
+    def test_sim_reports_policy_only_never_pass(self):
+        core = bridge.Core(Path(self.tmp) / "st", bridge.SimBackend(), bridge.Fence("off"), ask="none")
+        out = core.selftest()
+        self.assertEqual(out["verdict"], "PASS-POLICY-ONLY", out["checks"])
+        self.assertEqual(out["passed"], out["total"])
+        names = {c["name"]: c["ok"] for c in out["checks"]}
+        for r in ("not-a-verb", "elevated-action", "credential-access", "no-scope"):
+            self.assertTrue(names[f"refusal:{r}"], f"refusal {r} did not fire inside the self-test")
+
+    def test_dead_backend_reports_fail(self):
+        core = bridge.Core(Path(self.tmp) / "st2", bridge.NullBackend(), bridge.Fence("off"), ask="none")
+        out = core.selftest()
+        self.assertEqual(out["verdict"], "FAIL")
+        self.assertLess(out["passed"], out["total"])
+
+    def test_selftest_is_itself_a_receipt(self):
+        core = bridge.Core(Path(self.tmp) / "st3", bridge.SimBackend(), bridge.Fence("off"), ask="none")
+        core.selftest()
+        rows = core.outcomes(50, True)
+        self.assertTrue(rows["chain"]["ok"], "running the self-test must not corrupt the chain it audits")
+        self.assertIn("selftest", [r["action"] for r in rows["receipts"]])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

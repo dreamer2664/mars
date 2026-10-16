@@ -512,6 +512,89 @@ class Core:
                             "perm": "-", "class": "write", "backend": self.backend.name,
                             "approval": f"denied:{reason or 'no reason given'}", "args_digest": digest(item["args"])})
 
+    # ---------- self-test (PCB-01: the "quick and light" connection probe) ----------
+    def selftest(self):
+        """A deterministic tour of the whole wire, in seconds, with no agent at the wheel.
+
+        Deliberately not a success meter. Every check says what it proved, and a sim backend passes the
+        policy checks while *failing* the "is this a real desktop" check on purpose — a self-test that
+        goes green on a pretend machine is the exact false confidence this repo refuses (the same logic
+        as `done-unverified`, §7.5). Three verdicts, not two: PASS, PASS-POLICY-ONLY, FAIL.
+        """
+        checks, notes = [], []
+        def chk(name, ok, detail=""):
+            checks.append({"name": name, "ok": bool(ok), "detail": str(detail)[:200]})
+        real = self.backend.name == "windows"
+        # informational, never a failure: on the sim this line is the *explanation* of the verdict, and
+        # a check that can only go red in a mode where red is expected trains people to ignore red.
+        chk("backend", True, f"backend={self.backend.name}"
+            + ("" if real else " — the sim proves the gates, not the desktop"))
+
+        # each §7.1 refusal is *exercised through act()*, because a rule that is only configured is not
+        # a rule: if the policy layer is ever bypassed, this goes red on the PC before a task runs.
+        for action, args, want in (("key_chord", {"keys": "ctrl+alt+del", "task": "t-selftest"}, "not-a-verb"),
+                                  ("launch", {"app": "runas", "task": "t-selftest"}, "elevated-action"),
+                                  ("set_text", {"element": "id-0-0", "text": "read ~/.private/crew.env",
+                                               "task": "t-selftest"}, "credential-access")):
+            got = None
+            try:
+                self.act(action, dict(args))
+            except Refused as r:
+                got = r.reason
+            chk(f"refusal:{want}", got == want, got or "the bridge DID NOT REFUSE")
+        got = None
+        try:
+            self.act("invoke", {"element": "id-0-0"})
+        except Refused as r:
+            got = r.reason
+        chk("refusal:no-scope", got == "no-scope", got or "an unattributable write ran")
+
+        first = None
+        try:
+            wins = self.backend.observe("windows", {})
+            items = wins.get("windows") or [{"id": k} for k in (getattr(self.backend, "state", {})
+                                                                .get("windows", {}))]
+            first = (items[0].get("id") if items else None) or "screen"
+            chk("observe:windows", wins.get("count", len(items)) > 0, f"{wins.get('count', len(items))} windows, first={first}")
+        except Exception as e:
+            chk("observe:windows", False, f"{type(e).__name__}: {e}")
+        for probe, args in (("tree", {"window": first}), ("capture", {"window": first})):
+            try:
+                obs = self.backend.observe(probe, args)
+                chk(f"observe:{probe}", obs is not None and obs.get("digest") is not None, digest(obs))
+                if probe == "tree" and real and not obs.get("elements"):
+                    notes.append("tree returned 0 elements on a real window — probable UIPI integrity "
+                                 "mismatch, not an empty app")
+                if probe == "capture" and obs.get("suspect"):
+                    notes.append("capture flagged: " + obs["suspect"])
+            except Exception as e:
+                chk(f"observe:{probe}", False, f"{type(e).__name__}: {e}")
+        try:
+            img = self.backend.observe("capture", {"window": first or "screen"}).get("img") or b""
+            chk("capture-under-ntfy-cap", 0 < len(img) <= CAPTURE_MAX_BYTES, f"{len(img)} bytes")
+        except Exception as e:
+            chk("capture-under-ntfy-cap", False, str(e))
+
+        # write the receipt *then* verify, so the chain check covers a real append on this box
+        try:
+            self.append({"action": "selftest", "task": "-", "state": "observed", "perm": "-",
+                         "class": "control", "backend": self.backend.name, "approval": "selftest",
+                         "args_digest": "0" * 16, "result": {"checks": len(checks)}})
+        except Exception as e:
+            chk("receipt-append", False, f"{type(e).__name__}: {e}")
+        else:
+            out = self.outcomes(50, True)
+            chk("receipt-chain-verifies", bool(out.get("chain", {}).get("ok")), f"{out['count']} receipts")
+
+        passed = sum(1 for c in checks if c["ok"])
+        all_ok = passed == len(checks)
+        verdict = "PASS" if (all_ok and real) else ("PASS-POLICY-ONLY" if all_ok else "FAIL")
+        return {"time": z(), "backend": self.backend.name, "passed": passed, "total": len(checks),
+                "checks": checks, "notes": notes, "verdict": verdict,
+                "meaning": {"PASS": "a real desktop answered the lens and every gate refused correctly",
+                            "PASS-POLICY-ONLY": "the gates are proven; no machine was touched (sim backend)",
+                            "FAIL": "do not run a task on this box — fix what is red first"}[verdict]}
+
     # ---------- human controls ----------
     def pause(self, reason="manual"):
         self.paused, self.pause_reason = True, reason
@@ -566,7 +649,7 @@ def _age_min(iso):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="bridge.py", description=__doc__.splitlines()[0])
     ap.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
-    ap.add_argument("--backend", default="sim", choices=["sim", "null"])
+    ap.add_argument("--backend", default="sim", choices=["sim", "null", "windows"])
     ap.add_argument("--fence", default="off", choices=["off", "static", "world"])
     ap.add_argument("--root", default=None, help="mars checkout root for --fence world")
     ap.add_argument("--token", default=None, help="fallback grant for approve/resume; act has its own")
@@ -577,6 +660,7 @@ def main(argv=None):
     ap.add_argument("--tidy-max-per-hour", type=int, default=TIDY_MAX_PER_HOUR_DEFAULT)
     g = ap.add_subparsers(dest="cmd", required=True)
     g.add_parser("status")
+    g.add_parser("selftest", help="run the whole-wire connection probe and exit non-zero on failure")
     a = g.add_parser("act"); a.add_argument("action"); a.add_argument("--task"); a.add_argument("--why")
     # the grant travels with the call that needs it: an agent types `act ... --token`, not a flag
     # two positions earlier. (The top-level pair still serves approve/resume/tests.)
@@ -595,7 +679,19 @@ def main(argv=None):
     s = g.add_parser("serve"); s.add_argument("--port", type=int, default=8765)
     args = ap.parse_args(argv)
 
-    be = NullBackend() if args.backend == "null" else SimBackend()
+    if args.backend == "windows":
+        # the import is inside the factory on purpose: policy stays importable (and testable) on any
+        # box, and a machine with no UIA fails here, at the boundary, with a reason.
+        try:
+            import winuia
+            be = winuia.WindowsBackend()
+        except Exception as e:
+            be = NullBackend()
+            be.name = f"windows-unavailable"
+            print(json.dumps({"ok": False, "backend": "windows", "refused": "backend-unreachable",
+                              "hint": str(e)}, sort_keys=True), file=sys.stderr)
+    else:
+        be = NullBackend() if args.backend == "null" else SimBackend()
     core = Core(args.log_dir, be, Fence(args.fence, args.root, args.token, args.generation, args.lock_file), ask=args.ask,
                 hold_timeout_min=args.hold_timeout_min, tidy_max_per_hour=args.tidy_max_per_hour)
 
@@ -625,6 +721,10 @@ def main(argv=None):
             out = core.pause()
         elif args.cmd == "resume":
             out = core.resume(args.by)
+        elif args.cmd == "selftest":
+            out = core.selftest()
+            print(json.dumps(out, sort_keys=True, indent=2, default=str))
+            return 0 if out["verdict"] != "FAIL" else 1
         elif args.cmd == "serve":
             return serve(core, args.port)
         else:

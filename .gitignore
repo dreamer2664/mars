@@ -5,3 +5,7 @@ __pycache__/
 # local scratch
 *.log
 .tmp/
+
+# the bridge's local runtime state: receipts, pending approvals, the PAUSE flag.
+# Never under world/ (that is the colony's record), and never committed: it is one machine's log.
+pc/
